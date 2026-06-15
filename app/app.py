@@ -1,9 +1,9 @@
-import os
 import json
 import re
 import streamlit as st
 import psycopg2
 import pandas as pd
+from databricks.sdk import WorkspaceClient
 
 st.set_page_config(
     page_title="Healthcare Facility Finder",
@@ -11,14 +11,9 @@ st.set_page_config(
     layout="wide"
 )
 
-LAKEBASE_CONFIG = {
-    "host": "ep-misty-forest-d8hvkz5k.database.us-east-2.cloud.databricks.com",
-    "database": "databricks_postgres",
-    "user": "emdleb@gmail.com",
-    "password": os.getenv("DATABRICKS_TOKEN", ""),
-    "port": "5432",
-    "sslmode": "require"
-}
+LAKEBASE_HOST = "ep-misty-forest-d8hvkz5k.database.us-east-2.cloud.databricks.com"
+LAKEBASE_DATABASE = "databricks_postgres"
+LAKEBASE_ENDPOINT = "projects/healthcare-facility-finder/branches/production/endpoints/primary"
 
 # ── Capability definitions ────────────────────────────────────────────────────
 
@@ -74,13 +69,20 @@ TRUST_ORDER = {"none": 0, "weak": 1, "partial": 2, "strong": 3}
 
 # ── Database helpers ──────────────────────────────────────────────────────────
 
-@st.cache_resource
+@st.cache_resource(ttl=3500)  # Refresh before the 1-hour token expiry
 def get_db_connection():
-    if not LAKEBASE_CONFIG["password"]:
-        st.error("⚠️ Database token not configured. Set DATABRICKS_TOKEN env var.")
-        return None
     try:
-        return psycopg2.connect(**LAKEBASE_CONFIG)
+        w = WorkspaceClient()
+        user = w.current_user.me().user_name
+        token = w.postgres.generate_database_credential(endpoint=LAKEBASE_ENDPOINT).token
+        return psycopg2.connect(
+            host=LAKEBASE_HOST,
+            database=LAKEBASE_DATABASE,
+            user=user,
+            password=token,
+            port=5432,
+            sslmode="require",
+        )
     except Exception as e:
         st.error(f"Failed to connect to database: {e}")
         return None
