@@ -16,6 +16,8 @@ A comprehensive healthcare facility locator application built with Databricks me
 
 ### Medallion Architecture (Bronze → Silver → Gold)
 
+- **Target Schema:** `main.healthcare_facility_finder`
+
 ```
 ┌─────────────────┐
 │  Marketplace    │
@@ -53,6 +55,20 @@ A comprehensive healthcare facility locator application built with Databricks me
 │  (Python)       │  - Facility search
 └─────────────────┘  - Interactive map
                      - Service filtering
+```mermaid
+flowchart LR
+  A[Marketplace\ndatabricks_virtue_foundation_dataset] --> B[Bronze Layer\nmain.healthcare_facility_finder.*_bronze]
+  B --> C[Silver Layer\n*_silver (cleaned & validated)]
+  C --> D[Gold Layer\nfacilities_search_gold (view/table)]
+  D --> E[Lakebase Postgres\nfacilities_search (GIN / B‑tree indexes)]
+  D --> F[Databricks App\nStreamlit UI]
+  E --> F
+  subgraph UnityCatalog
+    B
+    C
+    D
+  end
+```
 ```
 
 ## 📁 Project Structure
@@ -73,6 +89,20 @@ Data-AVengers/
 │
 └── README.md                           # This file
 ```
+
+## 📒 Notebooks — Quick Summary
+
+- `00_setup_and_config.py`: Creates Unity Catalog schema (`main.healthcare_facility_finder`), sets configuration widgets, and provides Lakebase provisioning instructions and next steps.
+- `01_bronze_ingestion.py`: Ingests raw marketplace tables into bronze UC tables (`*_bronze`) and adds ingestion metadata.
+- `02_silver_transformation.py`: Cleans, standardizes, deduplicates bronze tables and writes `*_silver` tables with data-quality flags.
+- `03_gold_curation.py`: Builds search-optimized `facilities_search_gold` view, provides Lakebase SQL and sync instructions, and index recommendations.
+- `04_deploy_app.py`: Verifies app files, assists with service-principal and UC permission setup, and deploys the Streamlit app to Databricks Apps.
+
+## Next Steps
+
+- Run notebooks in order: `00_setup_and_config.py` → `01_bronze_ingestion.py` → `02_silver_transformation.py` → `03_gold_curation.py` → `04_deploy_app.py`.
+- Provision a Lakebase instance and run the SQL in `03_gold_curation.py` to enable sub-10ms searches.
+- After first app deployment, re-run `04_deploy_app.py` to grant Unity Catalog permissions to the app service principal.
 
 ## 🚀 Quick Start
 
