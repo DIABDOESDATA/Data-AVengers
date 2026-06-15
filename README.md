@@ -14,61 +14,36 @@ A comprehensive healthcare facility locator application built with Databricks me
 
 ## 🏗️ Architecture
 
-### Medallion Architecture (Bronze → Silver → Gold)
+**Target Schema:** `main.healthcare_facility_finder`
 
-- **Target Schema:** `main.healthcare_facility_finder`
-
-```
-┌─────────────────┐
-│  Marketplace    │
-│  Source Data    │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  Bronze Layer   │  Raw data ingestion
-│  (UC Tables)    │  - facilities_bronze
-└────────┬────────┘  - pincodes_bronze
-         │           - health_indicators_bronze
-         ▼
-┌─────────────────┐
-│  Silver Layer   │  Cleaned & standardized
-│  (UC Tables)    │  - facilities_silver
-└────────┬────────┘  - pincodes_silver
-         │           - health_indicators_silver
-         ▼
-┌─────────────────┐
-│  Gold Layer     │  Search-optimized & curated
-│  (UC Tables)    │  - facilities_search_gold
-└────────┬────────┘
-         │
-         │  Continuous Sync
-         ▼
-┌─────────────────┐
-│  Lakebase PG    │  Sub-10ms reads
-│  (Postgres)     │  - facilities_search
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Databricks App  │  Streamlit UI
-│  (Python)       │  - Facility search
-└─────────────────┘  - Interactive map
-                     - Service filtering
 ```mermaid
-flowchart LR
-  A[Marketplace\ndatabricks_virtue_foundation_dataset] --> B[Bronze Layer\nmain.healthcare_facility_finder.*_bronze]
-  B --> C[Silver Layer\n*_silver (cleaned & validated)]
-  C --> D[Gold Layer\nfacilities_search_gold (view/table)]
-  D --> E[Lakebase Postgres\nfacilities_search (GIN / B‑tree indexes)]
-  D --> F[Databricks App\nStreamlit UI]
-  E --> F
-  subgraph UnityCatalog
-    B
-    C
-    D
-  end
-```
+flowchart TD
+    subgraph SRC["📦 Data Source"]
+        MKT["Databricks Marketplace\ndatabricks_virtue_foundation_dataset_dais_2026\nfacilities · india_post_pincode_directory · nfhs_5_district_health_indicators"]
+    end
+
+    subgraph UC["🗄️ Unity Catalog — main.healthcare_facility_finder"]
+        direction TB
+        B["🥉 Bronze\nfacilities_bronze\npincodes_bronze\nhealth_indicators_bronze"]
+        S["🥈 Silver\nfacilities_silver\npincodes_silver\nhealth_indicators_silver"]
+        G["🥇 Gold\nfacilities_search_gold"]
+    end
+
+    subgraph LB["⚡ Lakebase Postgres (Autoscaling)"]
+        PG["facilities_search\nGIN + B-tree indexes\nsub-10ms reads"]
+    end
+
+    subgraph APP["🖥️ Databricks App — Streamlit"]
+        FS["🔍 Facility Search\nName · State · District\nSpecialties · Facility Type"]
+        CT["🧪 Capability Trust Evaluator\nICU · Emergency · Maternity\nOncology · Trauma · NICU\nStrong / Partial / Weak / No Claim"]
+    end
+
+    MKT --> B
+    B --> S
+    S --> G
+    G -->|"Lakebase Synced Tables\ncontinuous replication"| PG
+    PG --> FS
+    PG --> CT
 ```
 
 ## 📁 Project Structure
@@ -146,6 +121,7 @@ Run: `notebooks/04_deploy_app.py`
 - **Service Categories**: Filter by facility type, operator, specialties
 - **Contact Information**: Phone, email, website, address
 - **Real-time Data**: Powered by Lakebase with sub-10ms response times
+- **Capability Trust Evaluator**: Evaluate ICU, Emergency, Maternity, Oncology, Trauma, and NICU claims per facility — rated Strong, Partial, Weak, or No Claim based on specialty keyword frequency and facility type
 
 ### Technical Features
 - **Medallion Architecture**: Bronze → Silver → Gold data layers

@@ -1,7 +1,5 @@
 import json
 import re
-import os
-import uuid
 import streamlit as st
 import psycopg2
 import pandas as pd
@@ -13,13 +11,10 @@ st.set_page_config(
     layout="wide"
 )
 
-# Lakebase connection - use env vars when available (set by app resource config)
-LAKEBASE_HOST = os.environ.get("PGHOST", "ep-misty-forest-d8hvkz5k.database.us-east-2.cloud.databricks.com")
-# Most Lakebase instances use "postgres" as the default database name
-LAKEBASE_DATABASE = os.environ.get("PGDATABASE", "postgres")
-LAKEBASE_PORT = int(os.environ.get("PGPORT", "5432"))
-# Use app's service principal client ID for authentication
-LAKEBASE_USER = os.environ.get("PGUSER", "064b78a4-b14a-4a5d-93f8-3a3213d371c9")
+# Lakebase Autoscaling connection constants
+LAKEBASE_HOST = "ep-misty-forest-d8hvkz5k.database.us-east-2.cloud.databricks.com"
+LAKEBASE_DATABASE = "databricks_postgres"
+LAKEBASE_ENDPOINT = "projects/healthcare-facility-finder/branches/production/endpoints/primary"
 
 # ── Capability definitions ────────────────────────────────────────────────────
 
@@ -75,37 +70,22 @@ TRUST_ORDER = {"none": 0, "weak": 1, "partial": 2, "strong": 3}
 
 # ── Database helpers ──────────────────────────────────────────────────────────
 
-@st.cache_resource(ttl=3500)  # Refresh before the 1-hour token expiry
+@st.cache_resource(ttl=3500)  # Refresh before the 1-hour OAuth token expiry
 def get_db_connection():
     try:
         w = WorkspaceClient()
-        
-        # Generate OAuth token for database access
-        cred = w.database.generate_database_credential(
-            request_id=str(uuid.uuid4()),
-            instance_names=[LAKEBASE_DATABASE]
-        )
-        
-        # Determine username: prefer PGUSER env var, fallback to service principal client ID
-        if LAKEBASE_USER:
-            username = LAKEBASE_USER
-        else:
-            # When PGUSER isn't set, try the service principal client ID
-            username = os.environ.get("DATABRICKS_CLIENT_ID", "")
-            if not username:
-                st.warning("ℹ️ No PGUSER or DATABRICKS_CLIENT_ID found. Make sure the app's service principal has been granted access to the Lakebase database.")
-        
+        user = w.current_user.me().user_name
+        token = w.postgres.generate_database_credential(endpoint=LAKEBASE_ENDPOINT).token
         return psycopg2.connect(
             host=LAKEBASE_HOST,
             database=LAKEBASE_DATABASE,
-            user=username,
-            password=cred.token,
-            port=LAKEBASE_PORT,
+            user=user,
+            password=token,
+            port=5432,
             sslmode="require",
         )
     except Exception as e:
-        st.error(f"❌ Failed to connect to database: {e}")
-        st.info(f"Connection attempt - Host: {LAKEBASE_HOST}, Database: {LAKEBASE_DATABASE}, User: {username if 'username' in locals() else 'unknown'}")
+        st.error(f"Failed to connect to database: {e}")
         return None
 
 def search_facilities(search_term="", state="", city="", limit=100):
