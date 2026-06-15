@@ -1,5 +1,10 @@
 command: ['streamlit', 'run', 'app.py', '--server.port=8000', '--server.address=0.0.0.0']
 
+resources:
+  - name: lakebase
+    lakebase:
+      endpoint: projects/healthcare-facility-finder/branches/production/endpoints/primary
+
 env:
   - name: 'DATABRICKS_SERVER_HOSTNAME'
     value: 'dbc-816ff34d-b35d.cloud.databricks.com'
