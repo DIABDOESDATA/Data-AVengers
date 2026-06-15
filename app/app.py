@@ -1,203 +1,462 @@
 import os
+import json
+import re
 import streamlit as st
-import sys
 import psycopg2
 import pandas as pd
 
-# Page config
 st.set_page_config(
     page_title="Healthcare Facility Finder",
     page_icon="🏥",
     layout="wide"
 )
 
-# Lakebase connection configuration
 LAKEBASE_CONFIG = {
     "host": "ep-misty-forest-d8hvkz5k.database.us-east-2.cloud.databricks.com",
     "database": "databricks_postgres",
     "user": "emdleb@gmail.com",
-    "password": os.getenv("DATABRICKS_TOKEN", ""),  # Read from environment variable
+    "password": os.getenv("DATABRICKS_TOKEN", ""),
     "port": "5432",
     "sslmode": "require"
 }
 
+# ── Capability definitions ────────────────────────────────────────────────────
+
+CAPABILITIES = ["ICU", "Emergency", "Maternity", "Oncology", "Trauma", "NICU"]
+
+# Structured specialty keywords from the actual specialties JSON array
+SPECIALTY_KEYWORDS = {
+    "ICU":       ["criticalCareMedicine", "criticalCare", "intensiveCare"],
+    "Emergency": ["emergencyMedicine", "pediatricEmergencyMedicine",
+                  "emergencyPreparedness", "urgentCare"],
+    "Maternity": ["gynecologyAndObstetrics", "maternalFetalMedicine",
+                  "maternalFetal", "obstetrics",
+                  "familyPlanningAndComplexContraception"],
+    "Oncology":  ["medicalOncology", "surgicalOncology", "gynecologicalOncology",
+                  "gynecologicOncology", "orthopedicOncology",
+                  "radiationOncology", "oncology"],
+    "Trauma":    ["burnAndTraumaPlasticSurgery", "traumaSurgery", "trauma"],
+    "NICU":      ["neonatologyPerinatalMedicine", "neonatology",
+                  "neonatalPerinatalMedicine"],
+}
+
+# Description text keywords (lowercase for matching)
+DESC_KEYWORDS = {
+    "ICU":       ["icu", "intensive care unit", "critical care unit"],
+    "Emergency": ["emergency department", "emergency unit", "casualty", "a&e"],
+    "Maternity": ["maternity", "labour ward", "labor ward", "obstetric", "antenatal"],
+    "Oncology":  ["cancer", "oncology", "tumour", "tumor", "chemotherapy"],
+    "Trauma":    ["trauma center", "trauma centre", "trauma care"],
+    "NICU":      ["nicu", "neonatal icu", "neonatal intensive care"],
+}
+
+TRUSTED_FACILITY_TYPES = {"hospital", "clinic", "nursing_home"}
+
+TRUST_COLORS = {
+    "strong":  "#198754",
+    "partial": "#ffc107",
+    "weak":    "#fd7e14",
+    "none":    "#ced4da",
+}
+TRUST_TEXT_COLORS = {
+    "strong": "white",
+    "partial": "#212529",
+    "weak": "white",
+    "none": "#6c757d",
+}
+TRUST_LABELS = {
+    "strong": "Strong",
+    "partial": "Partial",
+    "weak": "Weak",
+    "none": "—",
+}
+TRUST_ORDER = {"none": 0, "weak": 1, "partial": 2, "strong": 3}
+
+# ── Database helpers ──────────────────────────────────────────────────────────
+
 @st.cache_resource
 def get_db_connection():
-    """Create and cache database connection"""
-    # Check if token is configured
     if not LAKEBASE_CONFIG["password"]:
-        st.error("""
-        ⚠️ Database token not configured. 
-        
-        Please set the DATABRICKS_TOKEN environment variable in the app configuration.
-        You can get the token from the gold curation notebook (cell 9).
-        """)
+        st.error("⚠️ Database token not configured. Set DATABRICKS_TOKEN env var.")
         return None
-    
     try:
-        conn = psycopg2.connect(**LAKEBASE_CONFIG)
-        return conn
+        return psycopg2.connect(**LAKEBASE_CONFIG)
     except Exception as e:
         st.error(f"Failed to connect to database: {e}")
         return None
 
 def search_facilities(search_term="", state="", city="", limit=100):
-    """Search facilities from Lakebase"""
     conn = get_db_connection()
     if not conn:
         return pd.DataFrame()
-    
     try:
-        # Build query
         query = "SELECT * FROM facilities_search WHERE 1=1"
         params = []
-        
         if search_term:
             query += " AND name ILIKE %s"
             params.append(f"%{search_term}%")
-        
         if state:
             query += " AND address_stateorregion = %s"
             params.append(state)
-        
         if city:
             query += " AND address_city ILIKE %s"
             params.append(f"%{city}%")
-        
         query += f" ORDER BY name LIMIT {limit}"
-        
-        # Execute query
-        df = pd.read_sql_query(query, conn, params=params)
-        return df
+        return pd.read_sql_query(query, conn, params=params)
+    except Exception as e:
+        st.error(f"Query error: {e}")
+        return pd.DataFrame()
+
+def get_facilities_for_evaluation(search_term="", state="", limit=200):
+    conn = get_db_connection()
+    if not conn:
+        return pd.DataFrame()
+    try:
+        query = """
+            SELECT unique_id, name, address_city, address_stateorregion,
+                   facilitytypeid, specialties, description
+            FROM facilities_search WHERE 1=1
+        """
+        params = []
+        if search_term:
+            query += " AND name ILIKE %s"
+            params.append(f"%{search_term}%")
+        if state:
+            query += " AND address_stateorregion = %s"
+            params.append(state)
+        query += " ORDER BY name LIMIT %s"
+        params.append(limit)
+        return pd.read_sql_query(query, conn, params=params)
     except Exception as e:
         st.error(f"Query error: {e}")
         return pd.DataFrame()
 
 def get_stats():
-    """Get dashboard statistics"""
     conn = get_db_connection()
     if not conn:
         return {"total": 0, "states": 0, "cities": 0, "with_gps": 0}
-    
     try:
-        cursor = conn.cursor()
-        
-        # Total facilities
-        cursor.execute("SELECT COUNT(*) FROM facilities_search")
-        total = cursor.fetchone()[0]
-        
-        # Unique states
-        cursor.execute("SELECT COUNT(DISTINCT address_stateorregion) FROM facilities_search WHERE address_stateorregion IS NOT NULL")
-        states = cursor.fetchone()[0]
-        
-        # Unique cities
-        cursor.execute("SELECT COUNT(DISTINCT address_city) FROM facilities_search WHERE address_city IS NOT NULL")
-        cities = cursor.fetchone()[0]
-        
-        # With GPS coordinates
-        cursor.execute("SELECT COUNT(*) FROM facilities_search WHERE latitude IS NOT NULL AND longitude IS NOT NULL")
-        with_gps = cursor.fetchone()[0]
-        
-        cursor.close()
-        
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM facilities_search")
+        total = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(DISTINCT address_stateorregion) FROM facilities_search WHERE address_stateorregion IS NOT NULL")
+        states = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(DISTINCT address_city) FROM facilities_search WHERE address_city IS NOT NULL")
+        cities = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM facilities_search WHERE latitude IS NOT NULL AND longitude IS NOT NULL")
+        with_gps = cur.fetchone()[0]
+        cur.close()
         return {"total": total, "states": states, "cities": cities, "with_gps": with_gps}
     except Exception as e:
         st.error(f"Stats error: {e}")
         return {"total": 0, "states": 0, "cities": 0, "with_gps": 0}
 
 def get_states():
-    """Get list of states for dropdown"""
     conn = get_db_connection()
     if not conn:
         return []
-    
     try:
-        cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT address_stateorregion FROM facilities_search WHERE address_stateorregion IS NOT NULL ORDER BY address_stateorregion")
-        states = [row[0] for row in cursor.fetchall()]
-        cursor.close()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT DISTINCT address_stateorregion FROM facilities_search "
+            "WHERE address_stateorregion IS NOT NULL ORDER BY address_stateorregion"
+        )
+        states = [row[0] for row in cur.fetchall()]
+        cur.close()
         return states
-    except:
+    except Exception:
         return []
 
-# Main content
+# ── Trust signal logic ────────────────────────────────────────────────────────
+
+def parse_specialties(raw):
+    if not raw:
+        return []
+    try:
+        result = json.loads(raw)
+        return result if isinstance(result, list) else []
+    except (json.JSONDecodeError, ValueError):
+        return re.findall(r'"([^"]+)"', raw)
+
+def compute_trust_signals(specialties_raw, description, facility_type):
+    """
+    Returns {capability: trust_level} where trust_level is one of:
+      strong  – specialty confirmed by 2+ independent sources in the specialties array
+      partial – specialty listed once in structured specialty data
+      weak    – mentioned only in free-text description, or single hit from
+                a non-standard facility type (suspicious provenance)
+      none    – no claim found anywhere
+    """
+    specialties = parse_specialties(specialties_raw)
+    desc = (description or "").lower()
+    is_trusted_type = (facility_type or "").lower() in TRUSTED_FACILITY_TYPES
+
+    signals = {}
+    for cap in CAPABILITIES:
+        kws = SPECIALTY_KEYWORDS[cap]
+        hits = sum(1 for s in specialties if any(kw.lower() in s.lower() for kw in kws))
+        desc_hit = any(kw in desc for kw in DESC_KEYWORDS[cap])
+
+        if hits >= 2:
+            signals[cap] = "strong"
+        elif hits == 1:
+            # A single structured claim from a non-standard facility type is suspicious
+            signals[cap] = "partial" if is_trusted_type else "weak"
+        elif desc_hit:
+            signals[cap] = "weak"
+        else:
+            signals[cap] = "none"
+
+    return signals
+
+# ── Rendering helpers ─────────────────────────────────────────────────────────
+
+def _badge(level):
+    color = TRUST_COLORS[level]
+    label = TRUST_LABELS[level]
+    tc = TRUST_TEXT_COLORS[level]
+    if level == "none":
+        return f'<span style="color:{tc};font-size:13px">—</span>'
+    return (
+        f'<span style="background:{color};color:{tc};padding:3px 10px;'
+        f'border-radius:12px;font-size:11px;font-weight:600;white-space:nowrap">'
+        f'{label}</span>'
+    )
+
+def render_trust_table(df, caps):
+    cap_headers = "".join(f'<th style="text-align:center;min-width:80px">{c}</th>' for c in caps)
+    rows = ""
+    for _, row in df.iterrows():
+        sigs = compute_trust_signals(
+            row.get("specialties"), row.get("description"), row.get("facilitytypeid")
+        )
+        city = row.get("address_city") or ""
+        state = row.get("address_stateorregion") or ""
+        location = f"{city}, {state}".strip(", ")
+        ftype = (row.get("facilitytypeid") or "").lower()
+        cells = "".join(f'<td style="text-align:center">{_badge(sigs[c])}</td>' for c in caps)
+        rows += (
+            f"<tr>"
+            f"<td><strong>{row['name']}</strong></td>"
+            f'<td style="color:#6c757d;font-size:12px">{location}</td>'
+            f'<td style="color:#6c757d;font-size:12px;text-transform:capitalize">{ftype}</td>'
+            f"{cells}"
+            f"</tr>"
+        )
+
+    return f"""
+<style>
+  .tt {{ width:100%;border-collapse:collapse;font-size:13px }}
+  .tt th {{ background:#212529;color:white;padding:8px 12px;white-space:nowrap }}
+  .tt td {{ padding:7px 10px;border-bottom:1px solid #dee2e6;vertical-align:middle }}
+  .tt tr:hover td {{ background:#f8f9fa }}
+</style>
+<table class="tt">
+  <thead><tr>
+    <th style="text-align:left">Facility</th>
+    <th style="text-align:left">Location</th>
+    <th style="text-align:left">Type</th>
+    {cap_headers}
+  </tr></thead>
+  <tbody>{rows}</tbody>
+</table>"""
+
+# ── Page header ───────────────────────────────────────────────────────────────
+
 st.title("🏥 Healthcare Facility Finder")
 st.markdown("### Data-AVengers Team | DAIS 2026 Virtue Foundation Dataset")
 
-# Get and display stats
 stats = get_stats()
-
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    st.metric("Total Facilities", f"{stats['total']:,}")
-with col2:
-    st.metric("States Covered", stats['states'])
-with col3:
-    st.metric("Cities", f"{stats['cities']:,}")
-with col4:
-    st.metric("With GPS Coordinates", f"{stats['with_gps']:,}")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Total Facilities", f"{stats['total']:,}")
+c2.metric("States Covered", stats["states"])
+c3.metric("Cities", f"{stats['cities']:,}")
+c4.metric("With GPS Coordinates", f"{stats['with_gps']:,}")
 
 st.markdown("---")
 
-# Search interface
-st.subheader("🔍 Search Healthcare Facilities")
+# ── Tabs ──────────────────────────────────────────────────────────────────────
 
-col1, col2, col3 = st.columns(3)
+tab1, tab2 = st.tabs(["🔍 Facility Search", "🧪 Capability Trust Evaluator"])
 
-with col1:
-    search_term = st.text_input("Facility Name", placeholder="e.g., Hospital, Clinic")
+# ── Tab 1: Facility Search (existing) ────────────────────────────────────────
 
-with col2:
-    states = ["All States"] + get_states()
-    selected_state = st.selectbox("State", states)
-    state_filter = None if selected_state == "All States" else selected_state
+with tab1:
+    st.subheader("Search Healthcare Facilities")
 
-with col3:
-    city = st.text_input("City", placeholder="e.g., Mumbai, Delhi")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        search_term = st.text_input("Facility Name", placeholder="e.g., Hospital, Clinic")
+    with col2:
+        states = ["All States"] + get_states()
+        selected_state = st.selectbox("State", states)
+        state_filter = None if selected_state == "All States" else selected_state
+    with col3:
+        city = st.text_input("City", placeholder="e.g., Mumbai, Delhi")
 
-if st.button("🔎 Search", type="primary"):
-    with st.spinner("Searching facilities..."):
-        results = search_facilities(search_term, state_filter, city)
-        
+    if st.button("🔎 Search", type="primary"):
+        with st.spinner("Searching facilities..."):
+            results = search_facilities(search_term, state_filter, city)
         if not results.empty:
             st.success(f"Found {len(results)} facilities")
-            
-            # Display results
-            st.dataframe(
-                results[['name', 'address_city', 'address_stateorregion', 'phone_numbers', 'email', 'facilityTypeId']],
-                use_container_width=True,
-                hide_index=True
-            )
-            
-            # Show facilities with GPS on map
-            with_gps = results[results['latitude'].notna() & results['longitude'].notna()]
+            display_cols = [c for c in
+                            ["name", "address_city", "address_stateorregion",
+                             "phone_numbers", "email", "facilitytypeid"]
+                            if c in results.columns]
+            st.dataframe(results[display_cols], use_container_width=True, hide_index=True)
+
+            with_gps = results[results["latitude"].notna() & results["longitude"].notna()]
             if not with_gps.empty:
                 st.subheader(f"📍 Map View ({len(with_gps)} facilities)")
-                st.map(with_gps[['latitude', 'longitude']], size=20, color="#ff0000")
+                st.map(with_gps[["latitude", "longitude"]], size=20, color="#ff0000")
         else:
             st.warning("No facilities found matching your search criteria.")
 
-# Project info
+# ── Tab 2: Capability Trust Evaluator ────────────────────────────────────────
+
+with tab2:
+    st.subheader("Evaluate Facility Capability Claims")
+    st.markdown(
+        "For each facility, this tool evaluates how well its claimed capabilities "
+        "are supported by **structured specialty data** vs. unstructured description text."
+    )
+
+    with st.expander("📖 Trust signal legend", expanded=True):
+        lc = st.columns(4)
+        lc[0].markdown(
+            f'<span style="background:{TRUST_COLORS["strong"]};color:white;padding:3px 10px;'
+            f'border-radius:12px;font-size:12px;font-weight:600">Strong</span>'
+            "&nbsp; Specialty confirmed by 2+ independent sources",
+            unsafe_allow_html=True,
+        )
+        lc[1].markdown(
+            f'<span style="background:{TRUST_COLORS["partial"]};color:#212529;padding:3px 10px;'
+            f'border-radius:12px;font-size:12px;font-weight:600">Partial</span>'
+            "&nbsp; Specialty listed once in structured data",
+            unsafe_allow_html=True,
+        )
+        lc[2].markdown(
+            f'<span style="background:{TRUST_COLORS["weak"]};color:white;padding:3px 10px;'
+            f'border-radius:12px;font-size:12px;font-weight:600">Weak</span>'
+            "&nbsp; Description text only, or non-standard facility type",
+            unsafe_allow_html=True,
+        )
+        lc[3].markdown("**—** &nbsp; No claim found in any field", unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # Filters
+    fc1, fc2 = st.columns(2)
+    with fc1:
+        eval_name = st.text_input("Facility name filter", placeholder="e.g., Apollo, Fortis", key="eval_name")
+    with fc2:
+        eval_states = ["All States"] + get_states()
+        eval_state_sel = st.selectbox("State", eval_states, key="eval_state")
+        eval_state = None if eval_state_sel == "All States" else eval_state_sel
+
+    fc3, fc4 = st.columns([3, 2])
+    with fc3:
+        selected_caps = st.multiselect(
+            "Capabilities to evaluate",
+            CAPABILITIES,
+            default=CAPABILITIES,
+            key="eval_caps",
+        )
+    with fc4:
+        min_trust_label = st.selectbox(
+            "Show only facilities with at least…",
+            ["Any claim (Weak+)", "Partial evidence", "Strong evidence"],
+            key="min_trust",
+        )
+
+    min_level = {"Any claim (Weak+)": 1, "Partial evidence": 2, "Strong evidence": 3}[min_trust_label]
+
+    if st.button("🔬 Evaluate", type="primary", key="eval_btn"):
+        if not selected_caps:
+            st.warning("Select at least one capability to evaluate.")
+        else:
+            with st.spinner("Fetching and evaluating facilities…"):
+                df_eval = get_facilities_for_evaluation(eval_name, eval_state, limit=200)
+
+            if df_eval.empty:
+                st.warning("No facilities found. Try broadening your filters.")
+            else:
+                # Compute trust signals for every row
+                all_signals = [
+                    compute_trust_signals(
+                        r.get("specialties"), r.get("description"), r.get("facilitytypeid")
+                    )
+                    for _, r in df_eval.iterrows()
+                ]
+
+                # Filter by minimum trust threshold across selected capabilities
+                mask = [
+                    any(TRUST_ORDER[sig.get(c, "none")] >= min_level for c in selected_caps)
+                    for sig in all_signals
+                ]
+                df_filtered = df_eval[mask].reset_index(drop=True)
+
+                if df_filtered.empty:
+                    st.warning("No facilities meet the selected trust threshold. Try lowering it.")
+                else:
+                    st.success(f"**{len(df_filtered)} facilities** match your filters")
+
+                    # Capability summary metrics
+                    mcols = st.columns(len(CAPABILITIES))
+                    for i, cap in enumerate(CAPABILITIES):
+                        count = sum(
+                            1 for sig in all_signals
+                            if TRUST_ORDER[sig.get(cap, "none")] >= 2
+                        )
+                        mcols[i].metric(cap, f"{count:,}", help=f"Facilities with ≥ Partial evidence for {cap}")
+
+                    st.markdown("---")
+
+                    # Trust matrix table
+                    st.markdown(
+                        render_trust_table(df_filtered, selected_caps),
+                        unsafe_allow_html=True,
+                    )
+
+                    # CSV download
+                    download_rows = []
+                    for _, row in df_filtered.iterrows():
+                        sigs = compute_trust_signals(
+                            row.get("specialties"), row.get("description"), row.get("facilitytypeid")
+                        )
+                        download_rows.append({
+                            "facility": row["name"],
+                            "city": row.get("address_city", ""),
+                            "state": row.get("address_stateorregion", ""),
+                            "facility_type": row.get("facilitytypeid", ""),
+                            **{f"{c}_trust": TRUST_LABELS[sigs[c]] for c in CAPABILITIES},
+                        })
+                    csv = pd.DataFrame(download_rows).to_csv(index=False)
+                    st.download_button(
+                        "⬇️ Download results as CSV",
+                        csv,
+                        "capability_trust.csv",
+                        "text/csv",
+                    )
+
+# ── Footer ────────────────────────────────────────────────────────────────────
+
 with st.expander("📊 About This Project"):
     st.markdown("""
     **Healthcare Facility Finder** is built on a medallion architecture:
-    
     * **Bronze Layer**: Raw data ingestion (176,421 rows)
-    * **Silver Layer**: Data cleaning & standardization  
+    * **Silver Layer**: Data cleaning & standardization
     * **Gold Layer**: Search-optimized view in Lakebase Postgres
-    
-    **Tech Stack:**
-    - Databricks Unity Catalog
-    - Lakebase (Postgres) for <10ms queries
-    - Streamlit
-    - Python + SQL
+
+    **Tech Stack:** Databricks Unity Catalog · Lakebase (Postgres) · Streamlit · Python + SQL
     """)
 
 st.markdown("---")
-st.markdown("""
-<div style='text-align: center; color: #666;'>
-<strong>Healthcare Facility Finder v1.0</strong><br>
-Built with Databricks • Lakebase • Streamlit<br>
-Team: Data-AVengers | DAIS 2026 Hackathon
-</div>
-""", unsafe_allow_html=True)
+st.markdown(
+    "<div style='text-align:center;color:#666'>"
+    "<strong>Healthcare Facility Finder v2.0</strong><br>"
+    "Built with Databricks · Lakebase · Streamlit<br>"
+    "Team: Data-AVengers | DAIS 2026 Hackathon"
+    "</div>",
+    unsafe_allow_html=True,
+)
