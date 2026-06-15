@@ -308,10 +308,16 @@ with tab1:
                             if c in results.columns]
             st.dataframe(results[display_cols], use_container_width=True, hide_index=True)
 
-            with_gps = results[results["latitude"].notna() & results["longitude"].notna()]
-            if not with_gps.empty:
-                st.subheader(f"📍 Map View ({len(with_gps)} facilities)")
-                st.map(with_gps[["latitude", "longitude"]], size=20, color="#ff0000")
+            if "latitude" in results.columns and "longitude" in results.columns:
+                map_df = results[["latitude", "longitude", "name"]].copy()
+                map_df["latitude"] = pd.to_numeric(map_df["latitude"], errors="coerce")
+                map_df["longitude"] = pd.to_numeric(map_df["longitude"], errors="coerce")
+                map_df = map_df.dropna(subset=["latitude", "longitude"])
+                if not map_df.empty:
+                    st.subheader(f"📍 Map View ({len(map_df)} facilities with GPS)")
+                    st.map(map_df, latitude="latitude", longitude="longitude", size=50, color="#ff4444")
+                else:
+                    st.info("No GPS coordinates available for the returned facilities.")
         else:
             st.warning("No facilities found matching your search criteria.")
 
