@@ -1,4 +1,4 @@
-command: ['streamlit', 'run', 'app.py', '--server.port=8080']
+command: ['streamlit', 'run', 'app.py', '--server.port=8000', '--server.address=0.0.0.0']
 
 env:
   - name: 'DATABRICKS_SERVER_HOSTNAME'
