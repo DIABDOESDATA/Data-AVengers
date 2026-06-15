@@ -245,6 +245,27 @@ def ask_llm(messages):
 
 # ── Trust signal logic ────────────────────────────────────────────────────────
 
+def format_phones(raw):
+    """Parse messy phone JSON arrays into a clean comma-separated string."""
+    if not raw or not isinstance(raw, str):
+        return raw
+    numbers = re.findall(r'\+?[0-9]{8,15}', raw)
+    if not numbers:
+        return raw
+    seen = set()
+    formatted = []
+    for num in numbers:
+        if not num.startswith('+'):
+            if num.startswith('91') and len(num) >= 12:
+                num = '+' + num
+            elif len(num) == 10:
+                num = '+91' + num
+        display = f"+91 {num[3:8]} {num[8:]}" if (num.startswith('+91') and len(num) == 13) else num
+        if num not in seen:
+            seen.add(num)
+            formatted.append(display)
+    return ', '.join(formatted) if formatted else None
+
 def parse_specialties(raw):
     if not raw:
         return []
@@ -379,7 +400,10 @@ with tab1:
                             ["name", "address_city", "address_stateorregion",
                              "phone_numbers", "email", "facilitytypeid"]
                             if c in results.columns]
-            st.dataframe(results[display_cols], use_container_width=True, hide_index=True)
+            display_df = results[display_cols].copy()
+            if "phone_numbers" in display_df.columns:
+                display_df["phone_numbers"] = display_df["phone_numbers"].apply(format_phones)
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
 
             if "latitude" in results.columns and "longitude" in results.columns:
                 map_df = results[["latitude", "longitude", "name"]].copy()

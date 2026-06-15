@@ -27,6 +27,36 @@ from pyspark.sql.functions import *
 from pyspark.sql.types import *
 from datetime import datetime
 
+# UDF: clean messy phone number arrays into readable comma-separated strings
+# Source data stores phones as [""+91XXXXXXXXXX"",""+91XXXXXXXXXX"",...]
+@udf(StringType())
+def clean_phones_udf(raw):
+    import re
+    if not raw:
+        return None
+    # Extract all digit sequences (8-15 digits, optional leading +)
+    numbers = re.findall(r'\+?[0-9]{8,15}', raw)
+    if not numbers:
+        return None
+    seen = set()
+    formatted = []
+    for num in numbers:
+        # Normalise to E.164-style +91...
+        if not num.startswith('+'):
+            if num.startswith('91') and len(num) >= 12:
+                num = '+' + num
+            elif len(num) == 10:
+                num = '+91' + num
+        # Human-readable format for Indian numbers: +91 XXXXX XXXXX
+        if num.startswith('+91') and len(num) == 13:
+            display = f"+91 {num[3:8]} {num[8:]}"
+        else:
+            display = num
+        if num not in seen:
+            seen.add(num)
+            formatted.append(display)
+    return ', '.join(formatted) if formatted else None
+
 # Configuration
 CATALOG = "main"
 SCHEMA = "healthcare_facility_finder"
@@ -68,6 +98,7 @@ facilities_silver = facilities_bronze \
     .withColumn("name", trim(col("name"))) \
     .withColumn("email", trim(lower(col("email")))) \
     .withColumn("officialPhone", trim(col("officialPhone"))) \
+    .withColumn("phone_numbers", clean_phones_udf(col("phone_numbers"))) \
     .withColumn("officialWebsite", trim(lower(col("officialWebsite")))) \
     .withColumn("address_line1", trim(col("address_line1"))) \
     .withColumn("address_line2", trim(col("address_line2"))) \
