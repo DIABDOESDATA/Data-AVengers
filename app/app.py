@@ -68,6 +68,16 @@ TRUST_LABELS = {
 }
 TRUST_ORDER = {"none": 0, "weak": 1, "partial": 2, "strong": 3}
 
+SYSTEM_PROMPT = """You are a healthcare data analyst assistant for the Data-AVengers team, working with the DAIS 2026 Virtue Foundation Dataset — a database of 10,000+ healthcare facilities in India.
+
+You help users understand facility capability claims by interpreting structured trust signals derived from specialty data. Trust signal meanings:
+- Strong: Specialty confirmed by 2+ independent sources in the structured specialty array (high confidence)
+- Partial: Listed once in structured specialty data from a recognized facility type (hospital/clinic/nursing home)
+- Weak: Mentioned only in free-text description, OR a single mention from a non-standard facility type (suspicious)
+- No Claim (—): Not found anywhere in the data
+
+When facility data is provided below, use it directly to answer. Be concise, direct, and honest. If asked whether a facility can actually do what it claims, give a clear verdict based on the trust signals."""
+
 # ── Database helpers ──────────────────────────────────────────────────────────
 
 @st.cache_resource(ttl=3500)  # Refresh before the 1-hour OAuth token expiry
@@ -169,6 +179,69 @@ def get_states():
         return states
     except Exception:
         return []
+
+def search_for_chat(query, limit=4):
+    conn = get_db_connection()
+    if not conn:
+        return pd.DataFrame()
+    try:
+        return pd.read_sql_query(
+            """SELECT unique_id, name, address_city, address_stateorregion,
+                      facilitytypeid, specialties, description
+               FROM facilities_search
+               WHERE name ILIKE %s OR description ILIKE %s
+               ORDER BY name LIMIT %s""",
+            conn,
+            params=[f"%{query}%", f"%{query}%", limit],
+        )
+    except Exception:
+        return pd.DataFrame()
+
+def extract_search_terms(text):
+    """Pull likely facility name keywords (capitalized sequences) from user message."""
+    skip = {"Can", "Which", "What", "Does", "Is", "Are", "Do", "How", "Tell",
+            "Show", "Find", "This", "The", "That", "Please", "Give", "List"}
+    # Prefer quoted strings
+    quoted = re.findall(r'"([^"]+)"', text)
+    if quoted:
+        return quoted[0]
+    # Fall back to capitalized proper-noun runs
+    caps = re.findall(r'\b[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*\b', text)
+    meaningful = [c for c in caps if c not in skip]
+    return " ".join(meaningful[:4]) if meaningful else ""
+
+def build_chat_context(df):
+    """Turn a DataFrame of facilities into a text block for the LLM."""
+    if df.empty:
+        return None
+    parts = []
+    for _, row in df.iterrows():
+        sigs = compute_trust_signals(
+            row.get("specialties"), row.get("description"), row.get("facilitytypeid")
+        )
+        trust_str = " | ".join(f"{c}: {TRUST_LABELS[v]}" for c, v in sigs.items())
+        desc = (row.get("description") or "")[:300]
+        parts.append(
+            f"Facility: {row['name']}\n"
+            f"Location: {row.get('address_city','')}, {row.get('address_stateorregion','')}\n"
+            f"Type: {row.get('facilitytypeid','unknown')}\n"
+            f"Capability trust signals: {trust_str}\n"
+            f"Description: {desc}"
+        )
+    return "\n\n---\n\n".join(parts)
+
+def ask_llm(messages):
+    try:
+        w = WorkspaceClient()
+        resp = w.serving_endpoints.query(
+            name="databricks-meta-llama-3-3-70b-instruct",
+            messages=messages,
+            max_tokens=800,
+            temperature=0.2,
+        )
+        return resp.choices[0].message.content
+    except Exception as e:
+        return f"⚠️ Model error: {e}"
 
 # ── Trust signal logic ────────────────────────────────────────────────────────
 
@@ -280,7 +353,7 @@ st.markdown("---")
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 
-tab1, tab2 = st.tabs(["🔍 Facility Search", "🧪 Capability Trust Evaluator"])
+tab1, tab2, tab3 = st.tabs(["🔍 Facility Search", "🧪 Capability Trust Evaluator", "💬 Chat with Data"])
 
 # ── Tab 1: Facility Search (existing) ────────────────────────────────────────
 
@@ -447,6 +520,59 @@ with tab2:
                         "capability_trust.csv",
                         "text/csv",
                     )
+
+# ── Tab 3: Chat with Data ─────────────────────────────────────────────────────
+
+with tab3:
+    st.subheader("💬 Chat with Your Facility Data")
+    st.caption(
+        "Ask questions like: *Can Apollo Hospital actually do ICU care?* · "
+        "*Which facilities in Maharashtra have strong emergency claims?* · "
+        "*What does Partial evidence mean for maternity?*"
+    )
+
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+    # Render conversation history
+    for msg in st.session_state.chat_history:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    if prompt := st.chat_input("Ask about facilities or their capability claims…"):
+        # Show user message immediately
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        st.session_state.chat_history.append({"role": "user", "content": prompt})
+
+        # Search the DB for relevant facilities
+        terms = extract_search_terms(prompt)
+        context_block = None
+        if terms:
+            df_ctx = search_for_chat(terms)
+            context_block = build_chat_context(df_ctx)
+
+        # Build system message with optional facility context
+        system_content = SYSTEM_PROMPT
+        if context_block:
+            system_content += f"\n\n### Relevant facilities from the database:\n\n{context_block}"
+
+        llm_messages = [{"role": "system", "content": system_content}]
+        llm_messages += [
+            {"role": m["role"], "content": m["content"]}
+            for m in st.session_state.chat_history
+        ]
+
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking…"):
+                reply = ask_llm(llm_messages)
+            st.markdown(reply)
+
+        st.session_state.chat_history.append({"role": "assistant", "content": reply})
+
+        if st.button("🗑️ Clear conversation", key="clear_chat"):
+            st.session_state.chat_history = []
+            st.rerun()
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 
