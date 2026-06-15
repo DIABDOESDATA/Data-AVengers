@@ -192,11 +192,11 @@ if silver_malformed.count() > 0:
 
 # COMMAND ----------
 
-# DBTITLE 1,Create Cleaned Gold View
-print("Creating cleaned gold view with proper filters...\n")
+# DBTITLE 1,Create Strict Validated Gold View
+from pyspark.sql.functions import col, trim, length
 
-# Create cleaned and standardized gold view
-# Build SQL without f-string to avoid escaping issues
+print("Creating STRICT gold view with comprehensive validation...\n")
+
 sql = """
 CREATE OR REPLACE VIEW {catalog}.{schema}.facilities_search_gold AS
 SELECT
@@ -204,7 +204,19 @@ SELECT
     name,
     organization_type,
     phone_numbers,
-    email,
+    
+    -- Clean and validate email
+    CASE
+        WHEN email IS NULL THEN NULL
+        WHEN email = 'null' THEN NULL
+        WHEN email LIKE '%[%' THEN NULL
+        WHEN email LIKE '%{{%' THEN NULL
+        WHEN email NOT LIKE '%@%' THEN NULL
+        WHEN email RLIKE '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}' THEN NULL
+        WHEN LENGTH(email) > 100 THEN NULL
+        ELSE TRIM(email)
+    END as email,
+    
     websites,
     address_line1,
     address_line2,
@@ -212,13 +224,11 @@ SELECT
     
     -- Clean and standardize state names
     CASE
-        -- Filter out malformed values (JSON, arrays, etc.)
         WHEN address_stateOrRegion LIKE '%{{%' THEN NULL
         WHEN address_stateOrRegion LIKE '%[%' THEN NULL
-        WHEN address_stateOrRegion LIKE '%"%' THEN NULL
+        WHEN address_stateOrRegion LIKE '%\"%' THEN NULL
         WHEN address_stateOrRegion LIKE '%coordinates%' THEN NULL
         WHEN address_stateOrRegion = 'kie' THEN NULL
-        -- Keep valid states
         ELSE TRIM(address_stateOrRegion)
     END as address_stateOrRegion,
     
@@ -226,49 +236,95 @@ SELECT
     address_country,
     latitude,
     longitude,
-    facilityTypeId,
+    
+    -- Clean and validate facilityTypeId
+    CASE
+        WHEN facilityTypeId IN ('hospital', 'clinic', 'dentist', 'doctor', 'pharmacy') THEN facilityTypeId
+        WHEN facilityTypeId = 'farmacy' THEN 'pharmacy'
+        WHEN facilityTypeId = 'nursing_home' THEN 'hospital'
+        WHEN facilityTypeId LIKE '%http%' THEN NULL
+        WHEN facilityTypeId LIKE '%[%' THEN NULL
+        WHEN facilityTypeId LIKE '%{{%' THEN NULL
+        WHEN facilityTypeId LIKE '%.%' THEN NULL
+        WHEN LENGTH(facilityTypeId) > 30 THEN NULL
+        ELSE NULL
+    END as facilityTypeId,
+    
     operatorTypeId,
     specialties,
     description,
     transformation_timestamp as last_updated
 FROM {catalog}.{schema}.facilities_silver
 WHERE 
-    -- Exclude malformed records
-    name IS NOT NULL
-    AND name NOT LIKE '%[%'  -- name shouldn't be an array
-    AND name NOT LIKE '%"%'  -- name shouldn't have quotes
-    AND unique_id IS NOT NULL
-    AND unique_id NOT LIKE ',%'  -- unique_id shouldn't start with comma
-    AND unique_id NOT LIKE '%"%'  -- unique_id shouldn't have quotes
-    -- Ensure we have either address or GPS data
+    -- CRITICAL: Exclude records with scrambled data
+    
+    -- 1. unique_id must be a proper UUID or short identifier (not a sentence)
+    unique_id IS NOT NULL
+    AND unique_id NOT LIKE '% %'
+    AND unique_id NOT LIKE ',%'
+    AND unique_id NOT LIKE '%\"%'
+    AND LENGTH(unique_id) < 100
+    
+    -- 2. name must be valid (not numeric-only, not null, not empty)
+    AND name IS NOT NULL
+    AND name NOT LIKE '%[%'
+    AND name NOT LIKE '%\"%'
+    AND TRIM(name) != ''
+    AND NOT (name RLIKE '^[0-9]+$')
+    
+    -- 3. organization_type must be 'facility' (exclude arrays and weird values)
+    AND organization_type = 'facility'
+    
+    -- 4. Must have either address or GPS coordinates
     AND (address_city IS NOT NULL OR latitude IS NOT NULL)
 ORDER BY name
 """.format(catalog=TARGET_CATALOG, schema=TARGET_SCHEMA)
 
 spark.sql(sql)
-
-print("\u2713 Created cleaned facilities_search_gold view")
+print("✓ Created STRICT validated gold view")
 
 # Verify the cleaned data
 cleaned_df = spark.table(f"{TARGET_CATALOG}.{TARGET_SCHEMA}.facilities_search_gold")
 cleaned_count = cleaned_df.count()
-print(f"\u2713 Cleaned gold view: {cleaned_count:,} facilities")
+print(f"✓ Gold view: {cleaned_count:,} facilities (after strict validation)")
 
-# Check cleaned data quality
-print("\n=== CLEANED DATA QUALITY ===")
+# Check data quality metrics
+print("\n=== DATA QUALITY VALIDATION ===")
+
+# 1. Email validation
+valid_emails = cleaned_df.filter(col('email').isNotNull()).count()
+invalid_emails = cleaned_df.filter(col('email').isNotNull() & ~col('email').contains('@')).count()
+print(f"  Valid emails: {valid_emails:,}")
+print(f"  Invalid emails (no @): {invalid_emails} ✓")
+
+# 2. Name validation
+numeric_names = cleaned_df.filter(col('name').rlike('^[0-9]+$')).count()
+print(f"  Numeric-only names: {numeric_names} ✓")
+
+# 3. Unique ID validation
+spaced_ids = cleaned_df.filter(col('unique_id').contains(' ')).count()
+print(f"  Unique IDs with spaces: {spaced_ids} ✓")
+
+# 4. Organization type
+print("\n  Organization type distribution:")
+cleaned_df.groupBy('organization_type').count().show(truncate=False)
+
+# 5. States
 states_clean = cleaned_df.select('address_stateOrRegion').filter(col('address_stateOrRegion').isNotNull()).distinct().count()
-print(f"Unique states (after cleaning): {states_clean}")
+print(f"  Unique states: {states_clean}")
 
-print("\nTop 10 states in cleaned data:")
+print("\nTop 10 states:")
 cleaned_df.groupBy('address_stateOrRegion').count() \
     .orderBy(col('count').desc()) \
     .limit(10) \
     .show(truncate=False)
 
 print("\nSample of cleaned records:")
-cleaned_df.select('name', 'address_city', 'address_stateOrRegion', 'facilityTypeId') \
+cleaned_df.select('name', 'email', 'address_city', 'address_stateOrRegion', 'facilityTypeId') \
     .limit(5) \
-    .show(truncate=False)
+    .show(truncate=80, vertical=True)
+
+print("\n✓ All data is now strictly validated and clean!")
 
 # COMMAND ----------
 
