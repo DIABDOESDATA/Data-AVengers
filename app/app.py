@@ -839,12 +839,78 @@ st.markdown("""
     }
 
     .tt td.muted { color: var(--muted-text); }
+
+    /* Theme toggle button */
+    [data-testid="stButton"] button[title="Switch theme"] {
+        font-size: 20px;
+        padding: 4px 10px;
+        border: 1px solid var(--border-soft);
+        border-radius: 8px;
+        background: var(--panel-bg);
+        cursor: pointer;
+        line-height: 1;
+    }
 </style>
 """, unsafe_allow_html=True)
 
+# ── Theme toggle ──────────────────────────────────────────────────────────────
+
+if "app_theme" not in st.session_state:
+    st.session_state.app_theme = "dark"
+
+_THEME_CSS = {
+    "dark": """
+        :root {
+            --muted-text: #adb5bd;
+            --border-soft: #495057;
+            --hover-bg: rgba(255,255,255,0.06);
+            --panel-bg: rgba(255,255,255,0.04);
+            --info-blue-bg: rgba(33,150,243,0.18);
+            --info-blue-text: #90caf9;
+            --info-orange-bg: rgba(255,152,0,0.18);
+            --info-orange-text: #ffcc80;
+            --note-text: #adb5bd;
+        }
+        .stApp, [data-testid="stAppViewContainer"] { background-color: #0e1117 !important; }
+        [data-testid="stHeader"] { background-color: #0e1117 !important; }
+        section[data-testid="stSidebar"] { background-color: #161b22 !important; }
+    """,
+    "light": """
+        :root {
+            --muted-text: #6c757d;
+            --border-soft: #dee2e6;
+            --hover-bg: #f8f9fa;
+            --panel-bg: rgba(0,0,0,0.02);
+            --info-blue-bg: #e3f2fd;
+            --info-blue-text: #1976d2;
+            --info-orange-bg: #fff3e0;
+            --info-orange-text: #f57c00;
+            --note-text: #666666;
+        }
+        .stApp, [data-testid="stAppViewContainer"] { background-color: #ffffff !important; }
+        [data-testid="stHeader"] { background-color: #ffffff !important; }
+        section[data-testid="stSidebar"] { background-color: #f8f9fa !important; }
+    """,
+}
+st.markdown(
+    f"<style>{_THEME_CSS[st.session_state.app_theme]}</style>",
+    unsafe_allow_html=True,
+)
+
 # ── Page header ───────────────────────────────────────────────────────────────
 
-st.title("🏥 Healthcare Facility Capabilities Verification")
+title_col, toggle_col = st.columns([11, 1])
+with title_col:
+    st.title("🏥 Healthcare Facility Capabilities Verification")
+with toggle_col:
+    st.write("")
+    is_dark = st.session_state.app_theme == "dark"
+    label = "☀️" if is_dark else "🌙"
+    tip = "Switch to light mode" if is_dark else "Switch to dark mode"
+    if st.button(label, help=tip, key="theme_toggle"):
+        st.session_state.app_theme = "light" if is_dark else "dark"
+        st.rerun()
+
 st.markdown("### Data-AVengers Team | DAIS 2026 Virtue Foundation Dataset")
 
 stats = get_stats()
@@ -927,7 +993,11 @@ with main_col:
                                 layers=[layer],
                                 initial_view_state=view,
                                 tooltip={"text": "{name}"},
-                                map_style="mapbox://styles/mapbox/light-v10",
+                                map_style=(
+                                "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
+                                if st.session_state.get("app_theme", "dark") == "dark"
+                                else "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
+                            ),
                             ),
                             use_container_width=True,
                         )
