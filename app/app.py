@@ -6,7 +6,7 @@ import pandas as pd
 from databricks.sdk import WorkspaceClient
 
 st.set_page_config(
-    page_title="Healthcare Facility Finder",
+    page_title="Healthcare Facility Capabilities Verification",
     page_icon="🏥",
     layout="wide"
 )
@@ -620,7 +620,7 @@ def _badge(level):
     label = TRUST_LABELS[level]
     tc = TRUST_TEXT_COLORS[level]
     if level == "none":
-        return f'<span style="color:{tc};font-size:13px">—</span>'
+        return '<span class="muted-text" style="font-size:13px">—</span>'
     return (
         f'<span style="background:{color};color:{tc};padding:3px 10px;'
         f'border-radius:12px;font-size:11px;font-weight:600;white-space:nowrap">'
@@ -669,7 +669,7 @@ def render_trust_table(df, caps):
                     f'</div>'
                 )
         
-        capabilities_cell = "".join(cap_list) if cap_list else '<span style="color:#999">No capabilities claimed</span>'
+        capabilities_cell = "".join(cap_list) if cap_list else '<span class="muted-text">No capabilities claimed</span>'
         
         # Build strengths/weaknesses tooltip
         strengths_html = " | ".join(f"✓ {s}" for s in trust_result['strengths'])
@@ -679,8 +679,8 @@ def render_trust_table(df, caps):
         rows += (
             f"<tr>"
             f"<td><strong>{row['name']}</strong></td>"
-            f'<td style="color:#6c757d;font-size:12px">{location}</td>'
-            f'<td style="color:#6c757d;font-size:12px;text-transform:capitalize">{ftype}</td>'
+            f'<td class="muted-text" style="font-size:12px">{location}</td>'
+            f'<td class="muted-text" style="font-size:12px;text-transform:capitalize">{ftype}</td>'
             f'<td style="text-align:center;padding:10px" title="{tooltip}">{score_badge}</td>'
             f'<td style="font-size:12px">{capabilities_cell}</td>'
             f"</tr>"
@@ -690,8 +690,8 @@ def render_trust_table(df, caps):
 <style>
   .tt {{ width:100%;border-collapse:collapse;font-size:13px }}
   .tt th {{ background:#212529;color:white;padding:10px 12px;white-space:nowrap }}
-  .tt td {{ padding:10px;border-bottom:1px solid #dee2e6;vertical-align:top }}
-  .tt tr:hover td {{ background:#f8f9fa }}
+  .tt td {{ padding:10px;border-bottom:1px solid var(--border-soft);vertical-align:top }}
+  .tt tr:hover td {{ background:var(--hover-bg) }}
 </style>
 <table class="tt">
   <thead><tr>
@@ -715,7 +715,7 @@ def render_facility_details(row):
     weaknesses_list = "".join(f"<li style='color:#dc3545'>✗ {w}</li>" for w in trust_result['weaknesses'])
     
     return f"""
-    <div style="border:1px solid #dee2e6;border-radius:8px;padding:16px;margin:10px 0">
+    <div class="panel-box">
         <h4 style="margin-top:0">{row['name']}</h4>
         <div style="margin-bottom:12px">
             <span style="background:{score_color};color:{score_text_color};padding:6px 12px;border-radius:12px;font-size:14px;font-weight:700">
@@ -739,17 +739,43 @@ def render_facility_details(row):
 
 st.markdown("""
 <style>
+    /* Theme-adaptive colors — light defaults, overridden under dark mode below */
+    :root {
+        --muted-text: #6c757d;
+        --border-soft: #dee2e6;
+        --hover-bg: #f8f9fa;
+        --panel-bg: rgba(0, 0, 0, 0.02);
+        --info-blue-bg: #e3f2fd;
+        --info-blue-text: #1976d2;
+        --info-orange-bg: #fff3e0;
+        --info-orange-text: #f57c00;
+        --note-text: #666666;
+    }
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --muted-text: #adb5bd;
+            --border-soft: #495057;
+            --hover-bg: rgba(255, 255, 255, 0.06);
+            --panel-bg: rgba(255, 255, 255, 0.04);
+            --info-blue-bg: rgba(33, 150, 243, 0.18);
+            --info-blue-text: #90caf9;
+            --info-orange-bg: rgba(255, 152, 0, 0.18);
+            --info-orange-text: #ffcc80;
+            --note-text: #adb5bd;
+        }
+    }
+
     /* Genie-style chat panel - only target the main 70/30 split, not all columns */
     .stHorizontalBlock > div[data-testid="column"]:nth-child(2) {
         border-left: 3px solid #FF3621;
         padding-left: 20px;
-        background: linear-gradient(to bottom, #ffffff 0%, #fafafa 100%);
+        background: var(--panel-bg);
         display: flex;
         flex-direction: column;
         height: calc(100vh - 200px);
     }
-    
-    /* Chat header styling */
+
+    /* Chat header styling - explicit bg + text so it's readable in both themes */
     .genie-header {
         background: linear-gradient(135deg, #FF3621 0%, #ff6b5a 100%);
         color: white;
@@ -760,7 +786,7 @@ st.markdown("""
         margin-bottom: 12px;
         flex-shrink: 0;
     }
-    
+
     /* Chat messages container - grows to fill space */
     .chat-messages-container {
         flex-grow: 1;
@@ -770,30 +796,54 @@ st.markdown("""
         padding-right: 8px;
         margin-bottom: 12px;
     }
-    
+
     /* Chat messages */
     .stChatMessage {
         border-radius: 8px;
         margin-bottom: 12px;
     }
-    
+
     /* Input area - stays at bottom */
     .chat-input-area {
         flex-shrink: 0;
         padding-top: 8px;
-        border-top: 1px solid #dee2e6;
+        border-top: 1px solid var(--border-soft);
     }
-    
+
     /* Disable spinner overlay on chat column only */
     .stHorizontalBlock > div[data-testid="column"]:nth-child(2) .stSpinner {
         position: relative !important;
     }
+
+    .muted-text { color: var(--muted-text); }
+    .footer-text { text-align: center; color: var(--note-text); }
+
+    .info-box {
+        padding: 15px;
+        border-radius: 8px;
+        height: 100%;
+    }
+    .info-box-blue { background: var(--info-blue-bg); border-left: 4px solid #2196f3; }
+    .info-box-blue h4 { color: var(--info-blue-text); margin-top: 0; }
+    .info-box-orange { background: var(--info-orange-bg); border-left: 4px solid #ff9800; }
+    .info-box-orange h4 { color: var(--info-orange-text); margin-top: 0; }
+    .info-box .note { margin-top: 12px; margin-bottom: 0; font-size: 12px; color: var(--note-text); }
+
+    .panel-box {
+        border: 1px solid var(--border-soft);
+        border-radius: 8px;
+        padding: 16px;
+        margin: 10px 0;
+        background: var(--panel-bg);
+    }
+
+    .tt td.muted { color: var(--muted-text); }
 </style>
 """, unsafe_allow_html=True)
 
 # ── Page header ───────────────────────────────────────────────────────────────
 
-st.title("🏥 Healthcare Facility Finder")
+st.title("🏥 Healthcare Facility Capabilities Verification")
 st.markdown("### Data-AVengers Team | DAIS 2026 Virtue Foundation Dataset")
 
 stats = get_stats()
@@ -872,24 +922,22 @@ with main_col:
     
     with col1:
         st.markdown("""
-        <div style="background:#e3f2fd;padding:15px;border-radius:8px;border-left:4px solid #2196f3;height:100%">
-        <h4 style="margin-top:0;color:#1976d2">📊 Trust Score (0-100)</h4>
+        <div class="info-box info-box-blue">
+        <h4>📊 Trust Score (0-100)</h4>
         <p style="margin-bottom:12px"><strong>Measures data completeness:</strong></p>
         <div style="font-size:13px;line-height:1.8">
         <p style="margin:6px 0">• Contact info (40 pts): Phone, Email, Website</p>
         <p style="margin:6px 0">• Location (30 pts): GPS + Complete address</p>
         <p style="margin:6px 0">• Credibility (30 pts): Specialties + Operator type</p>
         </div>
-        <p style="margin-top:12px;margin-bottom:0;font-size:12px;color:#666">
-        <strong>Note:</strong> Reflects database completeness, not medical quality.
-        </p>
+        <p class="note"><strong>Note:</strong> Reflects database completeness, not medical quality.</p>
         </div>
         """, unsafe_allow_html=True)
-    
+
     with col2:
         st.markdown(f"""
-        <div style="background:#fff3e0;padding:15px;border-radius:8px;border-left:4px solid #ff9800">
-        <h4 style="margin-top:0;color:#f57c00">🏥 Capability Signals</h4>
+        <div class="info-box info-box-orange">
+        <h4>🏥 Capability Signals</h4>
         <p style="margin-bottom:12px"><strong>6 capabilities evaluated:</strong> ICU, Emergency, Maternity, Oncology, Trauma, NICU</p>
         <div style="font-size:13px;line-height:1.8">
         <p style="margin:6px 0;display:flex;align-items:center">
@@ -905,9 +953,7 @@ with main_col:
         <span style="margin-left:10px">Description only</span>
         </p>
         </div>
-        <p style="margin-top:12px;margin-bottom:0;font-size:12px;color:#666">
-        <strong>Note:</strong> Low trust facilities have capabilities capped at "Weak".
-        </p>
+        <p class="note"><strong>Note:</strong> Low trust facilities have capabilities capped at "Weak".</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -1116,7 +1162,7 @@ with chat_col:
 
 with st.expander("📊 About This Project"):
     st.markdown("""
-    **Healthcare Facility Finder** is built on a medallion architecture:
+    **Healthcare Facility Capabilities Verification** is built on a medallion architecture:
     * **Bronze Layer**: Raw data ingestion (176,421 rows)
     * **Silver Layer**: Data cleaning & standardization
     * **Gold Layer**: Search-optimized view in Lakebase Postgres
@@ -1126,8 +1172,8 @@ with st.expander("📊 About This Project"):
 
 st.markdown("---")
 st.markdown(
-    "<div style='text-align:center;color:#666'>"
-    "<strong>Healthcare Facility Finder v2.0</strong><br>"
+    "<div class='footer-text'>"
+    "<strong>Healthcare Facility Capabilities Verification v2.0</strong><br>"
     "Built with Databricks · Lakebase · Streamlit<br>"
     "Team: Data-AVengers | DAIS 2026 Hackathon"
     "</div>",
