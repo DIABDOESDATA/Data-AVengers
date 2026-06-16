@@ -739,8 +739,8 @@ def render_facility_details(row):
 
 st.markdown("""
 <style>
-    /* Genie-style chat panel */
-    [data-testid="column"]:last-child {
+    /* Genie-style chat panel - only target the main 70/30 split, not all columns */
+    .stHorizontalBlock > div[data-testid="column"]:nth-child(2) {
         border-left: 3px solid #FF3621;
         padding-left: 20px;
         background: linear-gradient(to bottom, #ffffff 0%, #fafafa 100%);
@@ -785,7 +785,7 @@ st.markdown("""
     }
     
     /* Disable spinner overlay on chat column only */
-    [data-testid="column"]:last-child .stSpinner {
+    .stHorizontalBlock > div[data-testid="column"]:nth-child(2) .stSpinner {
         position: relative !important;
     }
 </style>
