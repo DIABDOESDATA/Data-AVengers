@@ -231,6 +231,60 @@ def get_states():
             conn.close()
         return []
 
+@st.cache_data(ttl=600)
+def get_facility_names():
+    conn = get_fresh_connection()
+    if not conn:
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT DISTINCT name FROM facilities_search "
+            "WHERE name IS NOT NULL ORDER BY name LIMIT 5000"
+        )
+        names = [row[0] for row in cur.fetchall()]
+        cur.close()
+        conn.close()
+        return names
+    except Exception:
+        if conn:
+            conn.close()
+        return []
+
+def search_and_evaluate(name="", state="", city="", limit=200):
+    """Unified search returning all columns needed for display, trust, and map."""
+    conn = get_fresh_connection()
+    if not conn:
+        return pd.DataFrame()
+    try:
+        query = """
+            SELECT unique_id, name, address_city, address_stateorregion,
+                   phone_numbers, email, websites, facilitytypeid,
+                   specialties, description, latitude, longitude,
+                   operatortypeid, address_line1, address_zipOrPostcode
+            FROM facilities_search WHERE 1=1
+        """
+        params = []
+        if name:
+            query += " AND name ILIKE %s"
+            params.append(f"%{name}%")
+        if state:
+            query += " AND address_stateorregion = %s"
+            params.append(state)
+        if city:
+            query += " AND address_city ILIKE %s"
+            params.append(f"%{city}%")
+        query += " ORDER BY name LIMIT %s"
+        params.append(limit)
+        result = pd.read_sql_query(query, conn, params=params)
+        conn.close()
+        return result
+    except Exception as e:
+        st.error(f"Query error: {e}")
+        if conn:
+            conn.close()
+        return pd.DataFrame()
+
 def search_for_chat(search_dict, limit=10):
     """Search for facilities using name and/or state"""
     conn = get_fresh_connection()
@@ -1000,14 +1054,16 @@ st.markdown(
 # ── Page header ───────────────────────────────────────────────────────────────
 
 is_dark = st.session_state.app_theme == "dark"
+if "chat_open" not in st.session_state:
+    st.session_state.chat_open = False
 
-title_col, toggle_col = st.columns([9, 3])
+title_col, toggle_col = st.columns([8, 4])
 with title_col:
     st.title("🏥 Healthcare Facility Capabilities Verification")
 with toggle_col:
     st.write("")
     st.write("")
-    t1, t2 = st.columns(2)
+    t1, t2, t3 = st.columns(3)
     with t1:
         if st.button(
             "☀️  Light",
@@ -1026,6 +1082,11 @@ with toggle_col:
         ):
             st.session_state.app_theme = "dark"
             st.rerun()
+    with t3:
+        chat_label = "✕ Chat" if st.session_state.chat_open else "💬 Chat"
+        if st.button(chat_label, key="btn_chat_toggle", use_container_width=True):
+            st.session_state.chat_open = not st.session_state.chat_open
+            st.rerun()
 
 st.markdown("### Data-AVengers Team | DAIS 2026 Virtue Foundation Dataset")
 
@@ -1038,335 +1099,246 @@ c4.metric("With GPS Coordinates", f"{stats['with_gps']:,}")
 
 st.markdown("---")
 
-# ── Main Layout: Content (70%) + Chat (30%) ───────────────────────────────────
+# ── Layout: full-width or split depending on chat state ───────────────────────
 
-# Initialize chat state
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-# Create two-column layout: main content (70%) and chat (30%)
-main_col, chat_col = st.columns([7, 3])
-
-# ── Main Content Column ────────────────────────────────────────────────────────
+if st.session_state.chat_open:
+    main_col, chat_col = st.columns([7, 3])
+else:
+    main_col = st.container()
+    chat_col = None
 
 with main_col:
-    # Tabs for main content
-    tab1, tab2 = st.tabs(["🔍 Facility Search", "🧪 Capability Trust Evaluator"])
+    st.subheader("🔍 Find & Verify a Healthcare Facility")
+    st.caption("Search by name, state or city — we'll show contact details, trust scores, and capability evidence all in one place.")
 
-    # ── Tab 1: Facility Search ────────────────────────────────────────────────
-    
-    with tab1:
-        st.subheader("Search Healthcare Facilities")
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            search_term = st.text_input("Facility Name", placeholder="e.g., Hospital, Clinic")
-        with col2:
-            states = ["All States"] + get_states()
-            selected_state = st.selectbox("State", states)
-            state_filter = None if selected_state == "All States" else selected_state
-        with col3:
-            city = st.text_input("City", placeholder="e.g., Mumbai, Delhi")
-        
-        if st.button("🔎 Search", type="primary"):
-            with st.spinner("Searching facilities..."):
-                results = search_facilities(search_term, state_filter, city)
-            if not results.empty:
-                st.success(f"Found {len(results)} facilities")
-                display_cols = [c for c in
-                                ["name", "address_city", "address_stateorregion",
-                                 "phone_numbers", "email", "facilitytypeid"]
-                                if c in results.columns]
-                display_df = results[display_cols].copy()
-                if "phone_numbers" in display_df.columns:
-                    display_df["phone_numbers"] = display_df["phone_numbers"].apply(format_phones)
-                st.dataframe(display_df, use_container_width=True, hide_index=True)
-                
-                if "latitude" in results.columns and "longitude" in results.columns:
-                    map_df = results[["latitude", "longitude", "name"]].copy()
-                    map_df["latitude"] = pd.to_numeric(map_df["latitude"], errors="coerce")
-                    map_df["longitude"] = pd.to_numeric(map_df["longitude"], errors="coerce")
-                    map_df = map_df.dropna(subset=["latitude", "longitude"])
-                    if not map_df.empty:
-                        st.subheader(f"📍 Map View ({len(map_df)} facilities with GPS)")
-                        layer = pdk.Layer(
-                            "ScatterplotLayer",
-                            data=map_df,
-                            get_position=["longitude", "latitude"],
-                            get_radius=8000,
-                            get_fill_color=[255, 68, 68, 200],
-                            get_line_color=[180, 0, 0],
-                            pickable=True,
-                        )
-                        view = pdk.ViewState(
-                            latitude=map_df["latitude"].mean(),
-                            longitude=map_df["longitude"].mean(),
-                            zoom=5,
-                            pitch=0,
-                        )
-                        st.pydeck_chart(
-                            pdk.Deck(
-                                layers=[layer],
-                                initial_view_state=view,
-                                tooltip={"text": "{name}"},
-                                map_style=(
+    # ── Unified Search + Trust Evaluation ──────────────────────────────────────
+
+    # Row 1: Facility name (autocomplete) | State | City
+    sc1, sc2, sc3 = st.columns([3, 2, 2])
+    with sc1:
+        facility_names = get_facility_names()
+        search_name = st.selectbox(
+            "Facility Name",
+            [""] + facility_names,
+            format_func=lambda x: "— start typing to search —" if x == "" else x,
+            key="search_name",
+        )
+    with sc2:
+        states = ["All States"] + get_states()
+        selected_state = st.selectbox("State", states, key="search_state")
+        state_filter = None if selected_state == "All States" else selected_state
+    with sc3:
+        city = st.text_input("City", placeholder="e.g., Mumbai, Delhi", key="search_city")
+
+    # Row 2: Trust score slider + capabilities multiselect
+    sf1, sf2 = st.columns([2, 3])
+    with sf1:
+        min_trust_score = st.slider(
+            "Minimum Trust Score", 0, 100, 0, step=5,
+            help="0 = show all  ·  70+ = high-confidence facilities"
+        )
+    with sf2:
+        selected_caps = st.multiselect(
+            "Capabilities to verify",
+            CAPABILITIES,
+            default=CAPABILITIES,
+            key="search_caps",
+        )
+
+    search_clicked = st.button("🔎 Search & Verify", type="primary", key="search_btn")
+
+    if search_clicked:
+        name_q = search_name if search_name else ""
+        with st.spinner("Searching and evaluating facilities…"):
+            df = search_and_evaluate(name=name_q, state=state_filter or "", city=city, limit=200)
+
+        if df.empty:
+            st.warning("No facilities found. Try broadening your search.")
+        else:
+            trust_results = [calculate_trust_score(r) for _, r in df.iterrows()]
+            df = df.copy()
+            df["_trust_score"] = [t["trust_score"] for t in trust_results]
+            df["_trust_tier"] = [t["trust_tier"] for t in trust_results]
+            df = df[df["_trust_score"] >= min_trust_score].reset_index(drop=True)
+
+            if df.empty:
+                st.warning(f"No facilities meet trust score ≥ {min_trust_score}. Try lowering the threshold.")
+            else:
+                st.success(f"**{len(df)} facilities** found")
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Facilities", len(df))
+                m2.metric("Avg Trust Score", f"{df['_trust_score'].mean():.0f}/100")
+                m3.metric("High Confidence (≥70)", int((df["_trust_score"] >= 70).sum()))
+                m4.metric("States", df["address_stateorregion"].nunique())
+
+                st.markdown("---")
+
+                if selected_caps:
+                    st.markdown(render_trust_table(df, selected_caps), unsafe_allow_html=True)
+                    st.markdown("---")
+
+                # Interactive map with rich tooltip
+                map_df = df[["latitude", "longitude", "name", "phone_numbers", "websites", "address_city"]].copy()
+                map_df["latitude"] = pd.to_numeric(map_df["latitude"], errors="coerce")
+                map_df["longitude"] = pd.to_numeric(map_df["longitude"], errors="coerce")
+                map_df = map_df.dropna(subset=["latitude", "longitude"])
+                if not map_df.empty:
+                    map_df["phone_display"] = map_df["phone_numbers"].apply(format_phones)
+                    map_df["website_display"] = map_df["websites"].fillna("").apply(
+                        lambda w: w.split(",")[0].strip() if w else "N/A"
+                    )
+                    map_df["gmaps_query"] = (
+                        map_df["name"].fillna("") + " " + map_df["address_city"].fillna("")
+                    ).str.replace(" ", "+", regex=False)
+                    map_df["gmaps_link"] = (
+                        "https://www.google.com/maps/search/?api=1&query=" + map_df["gmaps_query"]
+                    )
+                    st.subheader(f"📍 Map View ({len(map_df)} facilities with GPS)")
+                    layer = pdk.Layer(
+                        "ScatterplotLayer",
+                        data=map_df,
+                        get_position=["longitude", "latitude"],
+                        get_radius=8000,
+                        get_fill_color=[255, 68, 68, 200],
+                        get_line_color=[180, 0, 0],
+                        pickable=True,
+                    )
+                    view = pdk.ViewState(
+                        latitude=map_df["latitude"].mean(),
+                        longitude=map_df["longitude"].mean(),
+                        zoom=5,
+                        pitch=0,
+                    )
+                    st.pydeck_chart(
+                        pdk.Deck(
+                            layers=[layer],
+                            initial_view_state=view,
+                            tooltip={
+                                "html": (
+                                    "<b>{name}</b><br/>"
+                                    "📞 {phone_display}<br/>"
+                                    "🌐 {website_display}<br/>"
+                                    "<a href='{gmaps_link}' target='_blank' "
+                                    "style='color:#4fc3f7'>📍 Open in Google Maps</a>"
+                                ),
+                                "style": {
+                                    "backgroundColor": "#1e2736",
+                                    "color": "white",
+                                    "padding": "10px",
+                                    "borderRadius": "6px",
+                                },
+                            },
+                            map_style=(
                                 "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
                                 if st.session_state.get("app_theme", "dark") == "dark"
                                 else "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
                             ),
-                            ),
-                            use_container_width=True,
-                        )
-                    else:
-                        st.info("No GPS coordinates available for the returned facilities.")
-            else:
-                st.warning("No facilities found matching your search criteria.")
-    
-    # ── Tab 2: Capability Trust Evaluator ─────────────────────────────────────
-    
-    with tab2:
-        st.subheader("Evaluate Facility Trust & Capability Claims")
-    
-        # Side-by-side explanation boxes
-        col1, col2 = st.columns(2)
-    
-        with col1:
-            st.markdown("""
-            <div class="info-box info-box-blue">
-            <h4>📊 Trust Score (0-100)</h4>
-            <p style="margin-bottom:12px"><strong>Measures data completeness:</strong></p>
-            <div style="font-size:13px;line-height:1.8">
-            <p style="margin:6px 0">• Contact info (40 pts): Phone, Email, Website</p>
-            <p style="margin:6px 0">• Location (30 pts): GPS + Complete address</p>
-            <p style="margin:6px 0">• Credibility (30 pts): Specialties + Operator type</p>
-            </div>
-            <p class="note"><strong>Note:</strong> Reflects database completeness, not medical quality.</p>
-            </div>
-            """, unsafe_allow_html=True)
+                        ),
+                        use_container_width=True,
+                    )
+                    st.markdown("---")
 
-        with col2:
-            st.markdown(f"""
-            <div class="info-box info-box-orange">
-            <h4>🏥 Capability Signals</h4>
-            <p style="margin-bottom:12px"><strong>6 capabilities evaluated:</strong> ICU, Emergency, Maternity, Oncology, Trauma, NICU</p>
-            <div style="font-size:13px;line-height:1.8">
-            <p style="margin:6px 0;display:flex;align-items:center">
-            <span style="background:{TRUST_COLORS["strong"]};color:white;padding:3px 10px;border-radius:8px;font-size:11px;font-weight:600;display:inline-block;min-width:70px;text-align:center">Strong</span>
-            <span style="margin-left:10px">2+ specialty matches</span>
-            </p>
-            <p style="margin:6px 0;display:flex;align-items:center">
-            <span style="background:{TRUST_COLORS["partial"]};color:#212529;padding:3px 10px;border-radius:8px;font-size:11px;font-weight:600;display:inline-block;min-width:70px;text-align:center">Partial</span>
-            <span style="margin-left:10px">1 specialty match</span>
-            </p>
-            <p style="margin:6px 0;display:flex;align-items:center">
-            <span style="background:{TRUST_COLORS["weak"]};color:white;padding:3px 10px;border-radius:8px;font-size:11px;font-weight:600;display:inline-block;min-width:70px;text-align:center">Weak</span>
-            <span style="margin-left:10px">Description only</span>
-            </p>
-            </div>
-            <p class="note"><strong>Note:</strong> Low trust facilities have capabilities capped at "Weak".</p>
-            </div>
-            """, unsafe_allow_html=True)
+                # Expandable detail panels (top 10)
+                st.subheader("📊 Detailed Trust Analysis")
+                st.caption("Expand a facility to see contact details, trust strengths and weaknesses")
+                for _, row in df.head(10).iterrows():
+                    score_lbl = f"Trust {row['_trust_score']}/100 · {row['_trust_tier']}"
+                    with st.expander(f"🏥 {row['name']} — {row.get('address_city', 'N/A')} ({score_lbl})"):
+                        st.markdown(render_facility_details(row), unsafe_allow_html=True)
 
-        st.markdown("---")
+                # CSV download
+                download_rows = []
+                for _, row in df.iterrows():
+                    trust_result = calculate_trust_score(row)
+                    sigs = compute_trust_signals(
+                        row.get("specialties"), row.get("description"), row.get("facilitytypeid")
+                    )
+                    download_rows.append({
+                        "facility": row["name"],
+                        "city": row.get("address_city", ""),
+                        "state": row.get("address_stateorregion", ""),
+                        "facility_type": row.get("facilitytypeid", ""),
+                        "trust_score": trust_result["trust_score"],
+                        "trust_tier": trust_result["trust_tier"],
+                        "strengths": " | ".join(trust_result["strengths"]),
+                        "weaknesses": " | ".join(trust_result["weaknesses"]),
+                        **{f"{c}_trust": TRUST_LABELS[sigs[c]] for c in CAPABILITIES},
+                    })
+                csv_data = pd.DataFrame(download_rows).to_csv(index=False)
+                st.download_button(
+                    "⬇️ Download results with trust scores as CSV",
+                    csv_data,
+                    "facility_trust_analysis.csv",
+                    "text/csv",
+                )
 
-        # Filters
-        fc1, fc2 = st.columns(2)
-        with fc1:
-            eval_name = st.text_input("Facility name filter", placeholder="e.g., Apollo, Fortis", key="eval_name")
-        with fc2:
-            eval_states = ["All States"] + get_states()
-            eval_state_sel = st.selectbox("State", eval_states, key="eval_state")
-            eval_state = None if eval_state_sel == "All States" else eval_state_sel
+# ── Collapsible Chat Panel ─────────────────────────────────────────────────────
 
-        fc3, fc4 = st.columns([3, 2])
-        with fc3:
-            selected_caps = st.multiselect(
-                "Capabilities to evaluate",
-                CAPABILITIES,
-                default=CAPABILITIES,
-                key="eval_caps",
-            )
-        with fc4:
-            min_trust_label = st.selectbox(
-                "Show only facilities with at least…",
-                ["All facilities (no filter)", "Any claim (Weak+)", "Partial evidence", "Strong evidence"],
-                key="min_trust",
-            )
+if st.session_state.chat_open and chat_col is not None:
+    with chat_col:
+        st.markdown('<div class="genie-header">💬 Facility Trust Advisor</div>', unsafe_allow_html=True)
 
-        min_level = {
-            "All facilities (no filter)": 0,
-            "Any claim (Weak+)": 1,
-            "Partial evidence": 2,
-            "Strong evidence": 3
-        }[min_trust_label]
-
-        if st.button("🔬 Evaluate", type="primary", key="eval_btn"):
-            if not selected_caps:
-                st.warning("Select at least one capability to evaluate.")
-            else:
-                with st.spinner("Fetching and evaluating facilities…"):
-                    df_eval = get_facilities_for_evaluation(eval_name, eval_state, limit=200)
-
-                if df_eval.empty:
-                    st.warning("No facilities found. Try broadening your filters.")
-                else:
-                    # Compute trust scores and signals for every row
-                    all_trust_results = [
-                        calculate_trust_score(r)
-                        for _, r in df_eval.iterrows()
-                    ]
-                    all_signals = [
-                        compute_trust_signals(
-                            r.get("specialties"), r.get("description"), r.get("facilitytypeid")
-                        )
-                        for _, r in df_eval.iterrows()
-                    ]
-
-                    # Filter by minimum trust threshold across selected capabilities
-                    mask = [
-                        any(TRUST_ORDER[sig.get(c, "none")] >= min_level for c in selected_caps)
-                        for sig in all_signals
-                    ]
-                    df_filtered = df_eval[mask].reset_index(drop=True)
-
-                    if df_filtered.empty:
-                        st.warning("No facilities meet the selected trust threshold. Try lowering it.")
-                    else:
-                        st.success(f"**{len(df_filtered)} facilities** match your filters")
-
-                        # Capability summary metrics
-                        mcols = st.columns(len(CAPABILITIES))
-                        for i, cap in enumerate(CAPABILITIES):
-                            count = sum(
-                                1 for sig in all_signals
-                                if TRUST_ORDER[sig.get(cap, "none")] >= 2
-                            )
-                            mcols[i].metric(cap, f"{count:,}", help=f"Facilities with ≥ Partial evidence for {cap}")
-
-                        st.markdown("---")
-
-                        # Trust matrix table
-                        st.markdown(
-                            render_trust_table(df_filtered, selected_caps),
-                            unsafe_allow_html=True,
-                        )
-                    
-                        # Detailed facility analysis
-                        st.markdown("---")
-                        st.subheader("📊 Detailed Trust Analysis")
-                        st.caption("Click on a facility to see strengths and weaknesses")
-                    
-                        # Show detailed view for top 10 facilities
-                        for idx, (_, row) in enumerate(df_filtered.head(10).iterrows()):
-                            with st.expander(f"🏥 {row['name']} - {row.get('address_city', 'N/A')}"):
-                                st.markdown(render_facility_details(row), unsafe_allow_html=True)
-
-                        # CSV download with trust scores
-                        download_rows = []
-                        for _, row in df_filtered.iterrows():
-                            trust_result = calculate_trust_score(row)
-                            sigs = compute_trust_signals(
-                                row.get("specialties"), row.get("description"), row.get("facilitytypeid")
-                            )
-                            download_rows.append({
-                                "facility": row["name"],
-                                "city": row.get("address_city", ""),
-                                "state": row.get("address_stateorregion", ""),
-                                "facility_type": row.get("facilitytypeid", ""),
-                                "trust_score": trust_result['trust_score'],
-                                "trust_tier": trust_result['trust_tier'],
-                                "strengths": " | ".join(trust_result['strengths']),
-                                "weaknesses": " | ".join(trust_result['weaknesses']),
-                                **{f"{c}_trust": TRUST_LABELS[sigs[c]] for c in CAPABILITIES},
-                            })
-                        csv = pd.DataFrame(download_rows).to_csv(index=False)
-                        st.download_button(
-                            "⬇️ Download results with trust scores as CSV",
-                            csv,
-                            "facility_trust_analysis.csv",
-                            "text/csv",
-                        )
-
-# ── Right Chat Panel (Genie-style) ────────────────────────────────────────────
-
-with chat_col:
-    # Genie-style header
-    st.markdown('<div class="genie-header">💬 Facility Trust Advisor</div>', unsafe_allow_html=True)
-    
-    # Initialize processing state
-    if "is_processing" not in st.session_state:
-        st.session_state.is_processing = False
-    
-    # Show status message when processing
-    if st.session_state.is_processing:
-        st.info("🔄 Retrieving response from AI assistant...")
-    else:
-        st.caption("Ask about facilities, capabilities, or trust scores")
-    
-    # Chat messages in scrollable container (newest at bottom)
-    st.markdown('<div class="chat-messages-container">', unsafe_allow_html=True)
-    for msg in st.session_state.chat_history:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-    st.markdown('</div>', unsafe_allow_html=True)
-    
-    # Chat input area - always visible
-    st.markdown('<div class="chat-input-area">', unsafe_allow_html=True)
-    
-    # Chat input - disabled when processing
-    if not st.session_state.is_processing:
-        if prompt := st.chat_input("Ask about facilities…", key="genie_chat_input"):
-            # Set processing state
-            st.session_state.is_processing = True
-            
-            # Add user message to history
-            st.session_state.chat_history.append({"role": "user", "content": prompt})
-            
-            # Search the DB for relevant facilities
-            terms = extract_search_terms(prompt)
-            context_block = None
-            # Check if we have either a name or state to search for
-            if terms and (terms.get("name") or terms.get("state")):
-                df_ctx = search_for_chat(terms)
-                if not df_ctx.empty:
-                    context_block = build_chat_context(df_ctx)
-            
-            # Build system message with optional facility context
-            system_content = SYSTEM_PROMPT
-            if context_block:
-                system_content += f"\n\n### Relevant facilities from the database:\n\n{context_block}"
-            
-            llm_messages = [{"role": "system", "content": system_content}]
-            llm_messages += [
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.chat_history
-            ]
-            
-            # Get LLM response
-            reply = ask_llm(llm_messages)
-            st.session_state.chat_history.append({"role": "assistant", "content": reply})
-            
-            # Reset processing state
+        if "is_processing" not in st.session_state:
             st.session_state.is_processing = False
-            st.rerun()
-    else:
-        # Show disabled input when processing
-        st.chat_input("Please wait for response...", key="disabled_chat_input", disabled=True)
-    
-    st.markdown('</div>', unsafe_allow_html=True)
-    
-    # Clear button and examples
-    if st.session_state.chat_history:
-        if st.button("🗑️ Clear", key="clear_genie_chat", use_container_width=True):
-            st.session_state.chat_history = []
-            st.rerun()
-    
-    with st.expander("💡 Examples"):
-        st.markdown("""
-        - *Can Apollo Hospital do ICU care?*
-        - *Facilities in Maharashtra with emergency?*
-        - *What is Partial evidence?*
-        """)
+
+        if st.session_state.is_processing:
+            st.info("🔄 Retrieving response from AI assistant...")
+        else:
+            st.caption("Ask about facilities, capabilities, or trust scores")
+
+        st.markdown('<div class="chat-messages-container">', unsafe_allow_html=True)
+        for msg in st.session_state.chat_history:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="chat-input-area">', unsafe_allow_html=True)
+
+        if not st.session_state.is_processing:
+            if prompt := st.chat_input("Ask about facilities…", key="genie_chat_input"):
+                st.session_state.is_processing = True
+                st.session_state.chat_history.append({"role": "user", "content": prompt})
+
+                terms = extract_search_terms(prompt)
+                context_block = None
+                if terms and (terms.get("name") or terms.get("state")):
+                    df_ctx = search_for_chat(terms)
+                    if not df_ctx.empty:
+                        context_block = build_chat_context(df_ctx)
+
+                system_content = SYSTEM_PROMPT
+                if context_block:
+                    system_content += f"\n\n### Relevant facilities from the database:\n\n{context_block}"
+
+                llm_messages = [{"role": "system", "content": system_content}]
+                llm_messages += [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in st.session_state.chat_history
+                ]
+
+                reply = ask_llm(llm_messages)
+                st.session_state.chat_history.append({"role": "assistant", "content": reply})
+                st.session_state.is_processing = False
+                st.rerun()
+        else:
+            st.chat_input("Please wait for response...", key="disabled_chat_input", disabled=True)
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        if st.session_state.chat_history:
+            if st.button("🗑️ Clear", key="clear_genie_chat", use_container_width=True):
+                st.session_state.chat_history = []
+                st.rerun()
+
+        with st.expander("💡 Examples"):
+            st.markdown("""
+            - *Can Apollo Hospital do ICU care?*
+            - *Facilities in Maharashtra with emergency?*
+            - *What is Partial evidence?*
+            """)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 
