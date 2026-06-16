@@ -862,18 +862,87 @@ _THEME_CSS = {
     "dark": """
         :root {
             --muted-text: #adb5bd;
-            --border-soft: #495057;
-            --hover-bg: rgba(255,255,255,0.06);
-            --panel-bg: rgba(255,255,255,0.04);
+            --border-soft: #3d4452;
+            --hover-bg: rgba(255,255,255,0.07);
+            --panel-bg: rgba(255,255,255,0.05);
             --info-blue-bg: rgba(33,150,243,0.18);
             --info-blue-text: #90caf9;
             --info-orange-bg: rgba(255,152,0,0.18);
             --info-orange-text: #ffcc80;
             --note-text: #adb5bd;
         }
-        .stApp, [data-testid="stAppViewContainer"] { background-color: #0e1117 !important; }
-        [data-testid="stHeader"] { background-color: #0e1117 !important; }
-        section[data-testid="stSidebar"] { background-color: #161b22 !important; }
+        /* Page background */
+        .stApp, [data-testid="stAppViewContainer"],
+        [data-testid="stHeader"], [data-testid="block-container"] {
+            background-color: #0e1117 !important;
+        }
+        /* Main text */
+        .stApp, .stApp p, .stApp li, .stApp span,
+        [data-testid="stMarkdownContainer"] p,
+        [data-testid="stMarkdownContainer"] li { color: #e8eaf0 !important; }
+        h1, h2, h3, h4, h5 { color: #f4f6fb !important; }
+        /* Metric cards */
+        [data-testid="metric-container"] {
+            background-color: #1a1d27 !important;
+            border: 1px solid #3d4452 !important;
+            border-radius: 10px !important;
+            padding: 14px !important;
+        }
+        [data-testid="stMetricValue"] { color: #f4f6fb !important; }
+        [data-testid="stMetricLabel"] { color: #adb5bd !important; }
+        /* Text inputs */
+        [data-baseweb="input"] input,
+        [data-baseweb="textarea"] textarea {
+            background-color: #1a1d27 !important;
+            color: #e8eaf0 !important;
+            border-color: #3d4452 !important;
+        }
+        /* Selectbox */
+        [data-baseweb="select"] > div,
+        [data-baseweb="select"] [data-testid="stSelectbox"] {
+            background-color: #1a1d27 !important;
+            color: #e8eaf0 !important;
+            border-color: #3d4452 !important;
+        }
+        /* Dropdown options */
+        [data-baseweb="popover"] [role="listbox"],
+        [data-baseweb="menu"] { background-color: #1a1d27 !important; }
+        [role="option"] { color: #e8eaf0 !important; background-color: #1a1d27 !important; }
+        [role="option"]:hover, [aria-selected="true"][role="option"] {
+            background-color: #2d3244 !important;
+        }
+        /* Tabs */
+        [data-baseweb="tab-list"] { background-color: #161922 !important; border-bottom: 1px solid #3d4452 !important; }
+        [data-baseweb="tab"] { color: #adb5bd !important; }
+        [aria-selected="true"][data-baseweb="tab"] { color: #f4f6fb !important; border-bottom-color: #FF3621 !important; }
+        /* Expanders */
+        [data-testid="stExpander"] details {
+            border: 1px solid #3d4452 !important;
+            background-color: #161922 !important;
+        }
+        [data-testid="stExpander"] summary { color: #e8eaf0 !important; }
+        /* Dataframe */
+        [data-testid="stDataFrame"] { border: 1px solid #3d4452 !important; border-radius: 8px; }
+        /* Buttons (secondary/default) */
+        .stButton > button:not([kind="primary"]) {
+            background-color: #1a1d27 !important;
+            border-color: #3d4452 !important;
+            color: #e8eaf0 !important;
+        }
+        .stButton > button:not([kind="primary"]):hover {
+            border-color: #FF3621 !important;
+            color: #f4f6fb !important;
+        }
+        /* Caption / small text */
+        [data-testid="stCaptionContainer"] p { color: #8b95a7 !important; }
+        /* Success / warning / info / error boxes */
+        [data-testid="stAlert"] { border-radius: 8px !important; }
+        /* Multiselect tags */
+        [data-baseweb="tag"] { background-color: #2d3244 !important; color: #e8eaf0 !important; }
+        /* Spinner */
+        [data-testid="stSpinner"] { color: #adb5bd !important; }
+        /* Horizontal rule */
+        hr { border-color: #3d4452 !important; }
     """,
     "light": """
         :root {
@@ -885,11 +954,42 @@ _THEME_CSS = {
             --info-blue-text: #1976d2;
             --info-orange-bg: #fff3e0;
             --info-orange-text: #f57c00;
-            --note-text: #666666;
+            --note-text: #555555;
         }
-        .stApp, [data-testid="stAppViewContainer"] { background-color: #ffffff !important; }
-        [data-testid="stHeader"] { background-color: #ffffff !important; }
-        section[data-testid="stSidebar"] { background-color: #f8f9fa !important; }
+        .stApp, [data-testid="stAppViewContainer"],
+        [data-testid="stHeader"], [data-testid="block-container"] {
+            background-color: #f5f7fa !important;
+        }
+        .stApp, .stApp p, .stApp li, .stApp span,
+        [data-testid="stMarkdownContainer"] p,
+        [data-testid="stMarkdownContainer"] li { color: #1a1d27 !important; }
+        h1, h2, h3, h4, h5 { color: #0e1117 !important; }
+        [data-testid="metric-container"] {
+            background-color: #ffffff !important;
+            border: 1px solid #dee2e6 !important;
+            border-radius: 10px !important;
+            padding: 14px !important;
+        }
+        [data-testid="stMetricValue"] { color: #0e1117 !important; }
+        [data-testid="stMetricLabel"] { color: #6c757d !important; }
+        [data-baseweb="input"] input,
+        [data-baseweb="textarea"] textarea {
+            background-color: #ffffff !important;
+            color: #1a1d27 !important;
+            border-color: #dee2e6 !important;
+        }
+        [data-baseweb="select"] > div { background-color: #ffffff !important; color: #1a1d27 !important; }
+        [data-baseweb="tab-list"] { background-color: #ffffff !important; border-bottom: 1px solid #dee2e6 !important; }
+        [data-baseweb="tab"] { color: #6c757d !important; }
+        [aria-selected="true"][data-baseweb="tab"] { color: #0e1117 !important; border-bottom-color: #FF3621 !important; }
+        [data-testid="stExpander"] details { border: 1px solid #dee2e6 !important; background-color: #ffffff !important; }
+        .stButton > button:not([kind="primary"]) {
+            background-color: #ffffff !important;
+            border-color: #dee2e6 !important;
+            color: #1a1d27 !important;
+        }
+        [data-baseweb="tag"] { background-color: #e9ecef !important; color: #1a1d27 !important; }
+        hr { border-color: #dee2e6 !important; }
     """,
 }
 st.markdown(
@@ -899,17 +999,33 @@ st.markdown(
 
 # ── Page header ───────────────────────────────────────────────────────────────
 
-title_col, toggle_col = st.columns([11, 1])
+is_dark = st.session_state.app_theme == "dark"
+
+title_col, toggle_col = st.columns([9, 3])
 with title_col:
     st.title("🏥 Healthcare Facility Capabilities Verification")
 with toggle_col:
     st.write("")
-    is_dark = st.session_state.app_theme == "dark"
-    label = "☀️" if is_dark else "🌙"
-    tip = "Switch to light mode" if is_dark else "Switch to dark mode"
-    if st.button(label, help=tip, key="theme_toggle"):
-        st.session_state.app_theme = "light" if is_dark else "dark"
-        st.rerun()
+    st.write("")
+    t1, t2 = st.columns(2)
+    with t1:
+        if st.button(
+            "☀️  Light",
+            key="btn_light",
+            type="primary" if not is_dark else "secondary",
+            use_container_width=True,
+        ):
+            st.session_state.app_theme = "light"
+            st.rerun()
+    with t2:
+        if st.button(
+            "🌙  Dark",
+            key="btn_dark",
+            type="primary" if is_dark else "secondary",
+            use_container_width=True,
+        ):
+            st.session_state.app_theme = "dark"
+            st.rerun()
 
 st.markdown("### Data-AVengers Team | DAIS 2026 Virtue Foundation Dataset")
 
