@@ -78,13 +78,25 @@ TRUST_ORDER = {"none": 0, "weak": 1, "partial": 2, "strong": 3}
 
 SYSTEM_PROMPT = """You are a healthcare data analyst assistant for the Data-AVengers team, working with the DAIS 2026 Virtue Foundation Dataset — a database of 10,000+ healthcare facilities in India.
 
-You help users understand facility capability claims by interpreting structured trust signals derived from specialty data. Trust signal meanings:
-- Strong: Specialty confirmed by 2+ independent sources in the structured specialty array (high confidence)
-- Partial: Listed once in structured specialty data from a recognized facility type (hospital/clinic/nursing home)
-- Weak: Mentioned only in free-text description, OR a single mention from a non-standard facility type (suspicious)
-- No Claim (—): Not found anywhere in the data
+You help users assess facility trustworthiness using a TWO-FACTOR trust model:
 
-When facility data is provided below, use it directly to answer. Be concise, direct, and honest. If asked whether a facility can actually do what it claims, give a clear verdict based on the trust signals."""
+**Factor 1: Capability Evidence** (from specialty documentation)
+- Strong: Specialty confirmed by 2+ independent sources in structured data (high confidence)
+- Partial: Listed once in structured specialty data from recognized facility type (moderate confidence)
+- Weak: Only mentioned in free-text description OR single mention from non-standard facility type (low confidence)
+- No Claim (—): Not documented anywhere
+
+**Factor 2: Overall Facility Trust Score** (0-100, based on contact/location data completeness)
+- Strong (70-100): Complete contact info, verified GPS, documented specialties, trusted operator
+- Partial (40-69): Some missing data but core information present
+- Weak (0-39): Significant gaps in contact info, location, or credibility indicators
+
+**CRITICAL**: Both factors matter for trustworthiness assessment:
+- A facility with "Strong" capability evidence BUT "Weak" overall trust → Claims are documented but facility data quality is poor (missing contact/location) → Trustworthiness is QUESTIONABLE
+- A facility with "Weak" capability evidence AND "Weak" overall trust → Claims are poorly documented AND facility data is poor → Trustworthiness is LOW
+- A facility with "Strong" capability evidence AND "Strong" overall trust → Well-documented claims from verified facility → Trustworthiness is HIGH
+
+When assessing trustworthiness, consider BOTH the capability evidence strength AND the overall facility trust score. Be honest and direct in your assessment."""
 
 # ── Database helpers ──────────────────────────────────────────────────────────
 
@@ -294,24 +306,30 @@ def build_chat_context(df):
         return None
     parts = []
     for _, row in df.iterrows():
-        # Calculate overall trust first
+        # Calculate overall trust (contact info, location data)
         trust_result = calculate_trust_score(row)
         trust_tier = trust_result['trust_tier']
         trust_score = trust_result['trust_score']
         
-        # Get capability signals capped by overall trust
+        # Get capability signals based on specialty documentation
         sigs = compute_trust_signals(
-            row.get("specialties"), row.get("description"), row.get("facilitytypeid"),
-            overall_trust_tier=trust_tier
+            row.get("specialties"), row.get("description"), row.get("facilitytypeid")
         )
         trust_str = " | ".join(f"{c}: {TRUST_LABELS[v]}" for c, v in sigs.items())
+        
+        # Build strengths/weaknesses summary
+        strengths = ", ".join(trust_result['strengths'][:3]) if trust_result['strengths'] else "None"
+        weaknesses = ", ".join(trust_result['weaknesses'][:3]) if trust_result['weaknesses'] else "None"
+        
         desc = (row.get("description") or "")[:300]
         parts.append(
             f"Facility: {row['name']}\n"
             f"Location: {row.get('address_city','')}, {row.get('address_stateorregion','')}\n"
             f"Type: {row.get('facilitytypeid','unknown')}\n"
             f"Overall Trust Score: {trust_score}/100 ({trust_tier.upper()})\n"
-            f"Capability trust signals: {trust_str}\n"
+            f"  Strengths: {strengths}\n"
+            f"  Weaknesses: {weaknesses}\n"
+            f"Capability Evidence (from specialty documentation): {trust_str}\n"
             f"Description: {desc}"
         )
     return "\n\n---\n\n".join(parts)
@@ -556,14 +574,18 @@ def calculate_trust_score(row):
         'weaknesses': weaknesses
     }
 
-def compute_trust_signals(specialties_raw, description, facility_type, overall_trust_tier=None):
+def compute_trust_signals(specialties_raw, description, facility_type):
     """
-    Returns {capability: trust_level} for each capability.
-    Now adjusted based on overall facility trust score.
+    Returns {capability: trust_level} for each capability based on specialty documentation.
     
-    If overall trust is weak, capability signals are capped at 'weak' regardless of keyword matches.
-    If overall trust is partial, capability signals are capped at 'partial'.
-    Only facilities with strong overall trust can show strong capability signals.
+    This measures the STRENGTH OF EVIDENCE for each capability claim:
+    - Strong: 2+ independent specialty mentions in structured data (high confidence)
+    - Partial: 1 specialty mention from trusted facility type (moderate confidence)
+    - Weak: Only in description OR 1 mention from non-trusted type (low confidence)
+    - None: Not documented anywhere
+    
+    Note: This is separate from overall facility trust (contact/location data).
+    Both factors should be considered when assessing trustworthiness.
     """
     specialties = parse_specialties(specialties_raw)
     desc = (description or "").lower()
@@ -575,35 +597,19 @@ def compute_trust_signals(specialties_raw, description, facility_type, overall_t
         hits = sum(1 for s in specialties if any(kw.lower() in s.lower() for kw in kws))
         desc_hit = any(kw in desc for kw in DESC_KEYWORDS[cap])
 
-        # Determine base signal from keyword matching
+        # Determine signal from keyword matching - specialty data is authoritative
         if hits >= 2:
-            base_signal = "strong"
+            # Multiple specialty mentions = strong evidence regardless of contact info
+            signals[cap] = "strong"
         elif hits == 1:
-            base_signal = "partial" if is_trusted_type else "weak"
+            # Single specialty mention - trust depends on facility type
+            signals[cap] = "partial" if is_trusted_type else "weak"
         elif desc_hit:
-            base_signal = "weak"
+            # Only in description = weak evidence
+            signals[cap] = "weak"
         else:
-            base_signal = "none"
-        
-        # Cap the signal based on overall facility trust
-        if overall_trust_tier:
-            if overall_trust_tier == "weak":
-                # Weak facilities can't claim strong or partial capabilities
-                if base_signal in ["strong", "partial"]:
-                    signals[cap] = "weak"
-                else:
-                    signals[cap] = base_signal
-            elif overall_trust_tier == "partial":
-                # Partial facilities can't claim strong capabilities
-                if base_signal == "strong":
-                    signals[cap] = "partial"
-                else:
-                    signals[cap] = base_signal
-            else:
-                # Strong facilities can claim any level
-                signals[cap] = base_signal
-        else:
-            signals[cap] = base_signal
+            # Not documented
+            signals[cap] = "none"
 
     return signals
 
@@ -629,10 +635,9 @@ def render_trust_table(df, caps):
         trust_score = trust_result['trust_score']
         trust_tier = trust_result['trust_tier']
         
-        # Get capability signals (capped by overall trust tier)
+        # Get capability signals based on specialty documentation
         sigs = compute_trust_signals(
-            row.get("specialties"), row.get("description"), row.get("facilitytypeid"),
-            overall_trust_tier=trust_tier
+            row.get("specialties"), row.get("description"), row.get("facilitytypeid")
         )
         
         city = row.get("address_city") or ""
@@ -956,10 +961,9 @@ with main_col:
                 ]
                 all_signals = [
                     compute_trust_signals(
-                        r.get("specialties"), r.get("description"), r.get("facilitytypeid"),
-                        overall_trust_tier=trust_result['trust_tier']
+                        r.get("specialties"), r.get("description"), r.get("facilitytypeid")
                     )
-                    for (_, r), trust_result in zip(df_eval.iterrows(), all_trust_results)
+                    for _, r in df_eval.iterrows()
                 ]
 
                 # Filter by minimum trust threshold across selected capabilities
@@ -1006,8 +1010,7 @@ with main_col:
                     for _, row in df_filtered.iterrows():
                         trust_result = calculate_trust_score(row)
                         sigs = compute_trust_signals(
-                            row.get("specialties"), row.get("description"), row.get("facilitytypeid"),
-                            overall_trust_tier=trust_result['trust_tier']
+                            row.get("specialties"), row.get("description"), row.get("facilitytypeid")
                         )
                         download_rows.append({
                             "facility": row["name"],
