@@ -904,11 +904,21 @@ with main_col:
                     map_df["latitude"] = pd.to_numeric(map_df["latitude"], errors="coerce")
                     map_df["longitude"] = pd.to_numeric(map_df["longitude"], errors="coerce")
                     map_df = map_df.dropna(subset=["latitude", "longitude"])
+                    st.caption(
+                        f"Debug: {len(results)} results · {len(map_df)} have valid lat/lon"
+                    )
                     if not map_df.empty:
                         st.subheader(f"📍 Map View ({len(map_df)} facilities with GPS)")
-                        st.map(map_df, latitude="latitude", longitude="longitude", size=50, color="#ff4444")
+                        try:
+                            st.map(map_df, latitude="latitude", longitude="longitude", size=4000, color="#ff4444")
+                        except Exception as map_err:
+                            st.error(f"Map rendering error: {map_err}")
+                            st.dataframe(map_df.head(20), use_container_width=True)
                     else:
                         st.info("No GPS coordinates available for the returned facilities.")
+                        st.caption(f"Sample raw values: {results[['latitude', 'longitude']].head(5).to_dict('records')}")
+                else:
+                    st.warning(f"No latitude/longitude columns in results. Columns returned: {list(results.columns)}")
             else:
                 st.warning("No facilities found matching your search criteria.")
     
