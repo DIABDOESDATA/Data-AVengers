@@ -917,165 +917,165 @@ with main_col:
     with tab2:
         st.subheader("Evaluate Facility Trust & Capability Claims")
     
-    # Side-by-side explanation boxes
-    col1, col2 = st.columns(2)
+        # Side-by-side explanation boxes
+        col1, col2 = st.columns(2)
     
-    with col1:
-        st.markdown("""
-        <div class="info-box info-box-blue">
-        <h4>📊 Trust Score (0-100)</h4>
-        <p style="margin-bottom:12px"><strong>Measures data completeness:</strong></p>
-        <div style="font-size:13px;line-height:1.8">
-        <p style="margin:6px 0">• Contact info (40 pts): Phone, Email, Website</p>
-        <p style="margin:6px 0">• Location (30 pts): GPS + Complete address</p>
-        <p style="margin:6px 0">• Credibility (30 pts): Specialties + Operator type</p>
-        </div>
-        <p class="note"><strong>Note:</strong> Reflects database completeness, not medical quality.</p>
-        </div>
-        """, unsafe_allow_html=True)
+        with col1:
+            st.markdown("""
+            <div class="info-box info-box-blue">
+            <h4>📊 Trust Score (0-100)</h4>
+            <p style="margin-bottom:12px"><strong>Measures data completeness:</strong></p>
+            <div style="font-size:13px;line-height:1.8">
+            <p style="margin:6px 0">• Contact info (40 pts): Phone, Email, Website</p>
+            <p style="margin:6px 0">• Location (30 pts): GPS + Complete address</p>
+            <p style="margin:6px 0">• Credibility (30 pts): Specialties + Operator type</p>
+            </div>
+            <p class="note"><strong>Note:</strong> Reflects database completeness, not medical quality.</p>
+            </div>
+            """, unsafe_allow_html=True)
 
-    with col2:
-        st.markdown(f"""
-        <div class="info-box info-box-orange">
-        <h4>🏥 Capability Signals</h4>
-        <p style="margin-bottom:12px"><strong>6 capabilities evaluated:</strong> ICU, Emergency, Maternity, Oncology, Trauma, NICU</p>
-        <div style="font-size:13px;line-height:1.8">
-        <p style="margin:6px 0;display:flex;align-items:center">
-        <span style="background:{TRUST_COLORS["strong"]};color:white;padding:3px 10px;border-radius:8px;font-size:11px;font-weight:600;display:inline-block;min-width:70px;text-align:center">Strong</span>
-        <span style="margin-left:10px">2+ specialty matches</span>
-        </p>
-        <p style="margin:6px 0;display:flex;align-items:center">
-        <span style="background:{TRUST_COLORS["partial"]};color:#212529;padding:3px 10px;border-radius:8px;font-size:11px;font-weight:600;display:inline-block;min-width:70px;text-align:center">Partial</span>
-        <span style="margin-left:10px">1 specialty match</span>
-        </p>
-        <p style="margin:6px 0;display:flex;align-items:center">
-        <span style="background:{TRUST_COLORS["weak"]};color:white;padding:3px 10px;border-radius:8px;font-size:11px;font-weight:600;display:inline-block;min-width:70px;text-align:center">Weak</span>
-        <span style="margin-left:10px">Description only</span>
-        </p>
-        </div>
-        <p class="note"><strong>Note:</strong> Low trust facilities have capabilities capped at "Weak".</p>
-        </div>
-        """, unsafe_allow_html=True)
+        with col2:
+            st.markdown(f"""
+            <div class="info-box info-box-orange">
+            <h4>🏥 Capability Signals</h4>
+            <p style="margin-bottom:12px"><strong>6 capabilities evaluated:</strong> ICU, Emergency, Maternity, Oncology, Trauma, NICU</p>
+            <div style="font-size:13px;line-height:1.8">
+            <p style="margin:6px 0;display:flex;align-items:center">
+            <span style="background:{TRUST_COLORS["strong"]};color:white;padding:3px 10px;border-radius:8px;font-size:11px;font-weight:600;display:inline-block;min-width:70px;text-align:center">Strong</span>
+            <span style="margin-left:10px">2+ specialty matches</span>
+            </p>
+            <p style="margin:6px 0;display:flex;align-items:center">
+            <span style="background:{TRUST_COLORS["partial"]};color:#212529;padding:3px 10px;border-radius:8px;font-size:11px;font-weight:600;display:inline-block;min-width:70px;text-align:center">Partial</span>
+            <span style="margin-left:10px">1 specialty match</span>
+            </p>
+            <p style="margin:6px 0;display:flex;align-items:center">
+            <span style="background:{TRUST_COLORS["weak"]};color:white;padding:3px 10px;border-radius:8px;font-size:11px;font-weight:600;display:inline-block;min-width:70px;text-align:center">Weak</span>
+            <span style="margin-left:10px">Description only</span>
+            </p>
+            </div>
+            <p class="note"><strong>Note:</strong> Low trust facilities have capabilities capped at "Weak".</p>
+            </div>
+            """, unsafe_allow_html=True)
 
-    st.markdown("---")
+        st.markdown("---")
 
-    # Filters
-    fc1, fc2 = st.columns(2)
-    with fc1:
-        eval_name = st.text_input("Facility name filter", placeholder="e.g., Apollo, Fortis", key="eval_name")
-    with fc2:
-        eval_states = ["All States"] + get_states()
-        eval_state_sel = st.selectbox("State", eval_states, key="eval_state")
-        eval_state = None if eval_state_sel == "All States" else eval_state_sel
+        # Filters
+        fc1, fc2 = st.columns(2)
+        with fc1:
+            eval_name = st.text_input("Facility name filter", placeholder="e.g., Apollo, Fortis", key="eval_name")
+        with fc2:
+            eval_states = ["All States"] + get_states()
+            eval_state_sel = st.selectbox("State", eval_states, key="eval_state")
+            eval_state = None if eval_state_sel == "All States" else eval_state_sel
 
-    fc3, fc4 = st.columns([3, 2])
-    with fc3:
-        selected_caps = st.multiselect(
-            "Capabilities to evaluate",
-            CAPABILITIES,
-            default=CAPABILITIES,
-            key="eval_caps",
-        )
-    with fc4:
-        min_trust_label = st.selectbox(
-            "Show only facilities with at least…",
-            ["All facilities (no filter)", "Any claim (Weak+)", "Partial evidence", "Strong evidence"],
-            key="min_trust",
-        )
+        fc3, fc4 = st.columns([3, 2])
+        with fc3:
+            selected_caps = st.multiselect(
+                "Capabilities to evaluate",
+                CAPABILITIES,
+                default=CAPABILITIES,
+                key="eval_caps",
+            )
+        with fc4:
+            min_trust_label = st.selectbox(
+                "Show only facilities with at least…",
+                ["All facilities (no filter)", "Any claim (Weak+)", "Partial evidence", "Strong evidence"],
+                key="min_trust",
+            )
 
-    min_level = {
-        "All facilities (no filter)": 0,
-        "Any claim (Weak+)": 1,
-        "Partial evidence": 2,
-        "Strong evidence": 3
-    }[min_trust_label]
+        min_level = {
+            "All facilities (no filter)": 0,
+            "Any claim (Weak+)": 1,
+            "Partial evidence": 2,
+            "Strong evidence": 3
+        }[min_trust_label]
 
-    if st.button("🔬 Evaluate", type="primary", key="eval_btn"):
-        if not selected_caps:
-            st.warning("Select at least one capability to evaluate.")
-        else:
-            with st.spinner("Fetching and evaluating facilities…"):
-                df_eval = get_facilities_for_evaluation(eval_name, eval_state, limit=200)
-
-            if df_eval.empty:
-                st.warning("No facilities found. Try broadening your filters.")
+        if st.button("🔬 Evaluate", type="primary", key="eval_btn"):
+            if not selected_caps:
+                st.warning("Select at least one capability to evaluate.")
             else:
-                # Compute trust scores and signals for every row
-                all_trust_results = [
-                    calculate_trust_score(r)
-                    for _, r in df_eval.iterrows()
-                ]
-                all_signals = [
-                    compute_trust_signals(
-                        r.get("specialties"), r.get("description"), r.get("facilitytypeid")
-                    )
-                    for _, r in df_eval.iterrows()
-                ]
+                with st.spinner("Fetching and evaluating facilities…"):
+                    df_eval = get_facilities_for_evaluation(eval_name, eval_state, limit=200)
 
-                # Filter by minimum trust threshold across selected capabilities
-                mask = [
-                    any(TRUST_ORDER[sig.get(c, "none")] >= min_level for c in selected_caps)
-                    for sig in all_signals
-                ]
-                df_filtered = df_eval[mask].reset_index(drop=True)
-
-                if df_filtered.empty:
-                    st.warning("No facilities meet the selected trust threshold. Try lowering it.")
+                if df_eval.empty:
+                    st.warning("No facilities found. Try broadening your filters.")
                 else:
-                    st.success(f"**{len(df_filtered)} facilities** match your filters")
-
-                    # Capability summary metrics
-                    mcols = st.columns(len(CAPABILITIES))
-                    for i, cap in enumerate(CAPABILITIES):
-                        count = sum(
-                            1 for sig in all_signals
-                            if TRUST_ORDER[sig.get(cap, "none")] >= 2
+                    # Compute trust scores and signals for every row
+                    all_trust_results = [
+                        calculate_trust_score(r)
+                        for _, r in df_eval.iterrows()
+                    ]
+                    all_signals = [
+                        compute_trust_signals(
+                            r.get("specialties"), r.get("description"), r.get("facilitytypeid")
                         )
-                        mcols[i].metric(cap, f"{count:,}", help=f"Facilities with ≥ Partial evidence for {cap}")
+                        for _, r in df_eval.iterrows()
+                    ]
 
-                    st.markdown("---")
+                    # Filter by minimum trust threshold across selected capabilities
+                    mask = [
+                        any(TRUST_ORDER[sig.get(c, "none")] >= min_level for c in selected_caps)
+                        for sig in all_signals
+                    ]
+                    df_filtered = df_eval[mask].reset_index(drop=True)
 
-                    # Trust matrix table
-                    st.markdown(
-                        render_trust_table(df_filtered, selected_caps),
-                        unsafe_allow_html=True,
-                    )
-                    
-                    # Detailed facility analysis
-                    st.markdown("---")
-                    st.subheader("📊 Detailed Trust Analysis")
-                    st.caption("Click on a facility to see strengths and weaknesses")
-                    
-                    # Show detailed view for top 10 facilities
-                    for idx, (_, row) in enumerate(df_filtered.head(10).iterrows()):
-                        with st.expander(f"🏥 {row['name']} - {row.get('address_city', 'N/A')}"):
-                            st.markdown(render_facility_details(row), unsafe_allow_html=True)
+                    if df_filtered.empty:
+                        st.warning("No facilities meet the selected trust threshold. Try lowering it.")
+                    else:
+                        st.success(f"**{len(df_filtered)} facilities** match your filters")
 
-                    # CSV download with trust scores
-                    download_rows = []
-                    for _, row in df_filtered.iterrows():
-                        trust_result = calculate_trust_score(row)
-                        sigs = compute_trust_signals(
-                            row.get("specialties"), row.get("description"), row.get("facilitytypeid")
+                        # Capability summary metrics
+                        mcols = st.columns(len(CAPABILITIES))
+                        for i, cap in enumerate(CAPABILITIES):
+                            count = sum(
+                                1 for sig in all_signals
+                                if TRUST_ORDER[sig.get(cap, "none")] >= 2
+                            )
+                            mcols[i].metric(cap, f"{count:,}", help=f"Facilities with ≥ Partial evidence for {cap}")
+
+                        st.markdown("---")
+
+                        # Trust matrix table
+                        st.markdown(
+                            render_trust_table(df_filtered, selected_caps),
+                            unsafe_allow_html=True,
                         )
-                        download_rows.append({
-                            "facility": row["name"],
-                            "city": row.get("address_city", ""),
-                            "state": row.get("address_stateorregion", ""),
-                            "facility_type": row.get("facilitytypeid", ""),
-                            "trust_score": trust_result['trust_score'],
-                            "trust_tier": trust_result['trust_tier'],
-                            "strengths": " | ".join(trust_result['strengths']),
-                            "weaknesses": " | ".join(trust_result['weaknesses']),
-                            **{f"{c}_trust": TRUST_LABELS[sigs[c]] for c in CAPABILITIES},
-                        })
-                    csv = pd.DataFrame(download_rows).to_csv(index=False)
-                    st.download_button(
-                        "⬇️ Download results with trust scores as CSV",
-                        csv,
-                        "facility_trust_analysis.csv",
-                        "text/csv",
-                    )
+                    
+                        # Detailed facility analysis
+                        st.markdown("---")
+                        st.subheader("📊 Detailed Trust Analysis")
+                        st.caption("Click on a facility to see strengths and weaknesses")
+                    
+                        # Show detailed view for top 10 facilities
+                        for idx, (_, row) in enumerate(df_filtered.head(10).iterrows()):
+                            with st.expander(f"🏥 {row['name']} - {row.get('address_city', 'N/A')}"):
+                                st.markdown(render_facility_details(row), unsafe_allow_html=True)
+
+                        # CSV download with trust scores
+                        download_rows = []
+                        for _, row in df_filtered.iterrows():
+                            trust_result = calculate_trust_score(row)
+                            sigs = compute_trust_signals(
+                                row.get("specialties"), row.get("description"), row.get("facilitytypeid")
+                            )
+                            download_rows.append({
+                                "facility": row["name"],
+                                "city": row.get("address_city", ""),
+                                "state": row.get("address_stateorregion", ""),
+                                "facility_type": row.get("facilitytypeid", ""),
+                                "trust_score": trust_result['trust_score'],
+                                "trust_tier": trust_result['trust_tier'],
+                                "strengths": " | ".join(trust_result['strengths']),
+                                "weaknesses": " | ".join(trust_result['weaknesses']),
+                                **{f"{c}_trust": TRUST_LABELS[sigs[c]] for c in CAPABILITIES},
+                            })
+                        csv = pd.DataFrame(download_rows).to_csv(index=False)
+                        st.download_button(
+                            "⬇️ Download results with trust scores as CSV",
+                            csv,
+                            "facility_trust_analysis.csv",
+                            "text/csv",
+                        )
 
 # ── Right Chat Panel (Genie-style) ────────────────────────────────────────────
 
