@@ -21,19 +21,27 @@ LAKEBASE_ENDPOINT = "projects/healthcare-facility-finder/branches/production/end
 CAPABILITIES = ["ICU", "Emergency", "Maternity", "Oncology", "Trauma", "NICU"]
 
 # Structured specialty keywords from the actual specialties JSON array
+# Expanded to match more real-world specialty names from the database
 SPECIALTY_KEYWORDS = {
-    "ICU":       ["criticalCareMedicine", "criticalCare", "intensiveCare"],
+    "ICU":       ["criticalCareMedicine", "criticalCare", "intensiveCare", "critical", "icu",
+                  "anesthesia", "anesthesiology"],  # Anesthesia often indicates ICU capability
     "Emergency": ["emergencyMedicine", "pediatricEmergencyMedicine",
-                  "emergencyPreparedness", "urgentCare"],
+                  "emergencyPreparedness", "urgentCare", "emergency", "trauma"],
     "Maternity": ["gynecologyAndObstetrics", "maternalFetalMedicine",
-                  "maternalFetal", "obstetrics",
-                  "familyPlanningAndComplexContraception"],
+                  "maternalFetal", "obstetrics", "gynecology", "obgyn",
+                  "familyPlanningAndComplexContraception", "reproductiveEndocrinology",
+                  "maternalHealth", "prenatal", "postnatal"],
     "Oncology":  ["medicalOncology", "surgicalOncology", "gynecologicalOncology",
                   "gynecologicOncology", "orthopedicOncology",
-                  "radiationOncology", "oncology"],
-    "Trauma":    ["burnAndTraumaPlasticSurgery", "traumaSurgery", "trauma"],
+                  "radiationOncology", "oncology", "cancer", "hematology",
+                  "neuroOncology", "pediatricOncology"],
+    "Trauma":    ["burnAndTraumaPlasticSurgery", "traumaSurgery", "trauma",
+                  "emergencyMedicine", "orthopedicSurgery", "neurosurgery",
+                  "vascularSurgery", "cardiacSurgery", "generalSurgery"],
     "NICU":      ["neonatologyPerinatalMedicine", "neonatology",
-                  "neonatalPerinatalMedicine"],
+                  "neonatalPerinatalMedicine", "neonatal", "nicu",
+                  "pediatrics", "pediatricCardiology", "pediatricNeurology",
+                  "pediatricSurgery"],
 }
 
 # Description text keywords (lowercase for matching)
@@ -125,11 +133,7 @@ def get_facilities_for_evaluation(search_term="", state="", limit=200):
     if not conn:
         return pd.DataFrame()
     try:
-        query = """
-            SELECT unique_id, name, address_city, address_stateorregion,
-                   facilitytypeid, specialties, description
-            FROM facilities_search WHERE 1=1
-        """
+        query = "SELECT * FROM facilities_search WHERE 1=1"
         params = []
         if search_term:
             query += " AND name ILIKE %s"
@@ -216,8 +220,15 @@ def build_chat_context(df):
         return None
     parts = []
     for _, row in df.iterrows():
+        # Calculate overall trust first
+        trust_result = calculate_trust_score(row)
+        trust_tier = trust_result['trust_tier']
+        trust_score = trust_result['trust_score']
+        
+        # Get capability signals capped by overall trust
         sigs = compute_trust_signals(
-            row.get("specialties"), row.get("description"), row.get("facilitytypeid")
+            row.get("specialties"), row.get("description"), row.get("facilitytypeid"),
+            overall_trust_tier=trust_tier
         )
         trust_str = " | ".join(f"{c}: {TRUST_LABELS[v]}" for c, v in sigs.items())
         desc = (row.get("description") or "")[:300]
@@ -225,6 +236,7 @@ def build_chat_context(df):
             f"Facility: {row['name']}\n"
             f"Location: {row.get('address_city','')}, {row.get('address_stateorregion','')}\n"
             f"Type: {row.get('facilitytypeid','unknown')}\n"
+            f"Overall Trust Score: {trust_score}/100 ({trust_tier.upper()})\n"
             f"Capability trust signals: {trust_str}\n"
             f"Description: {desc}"
         )
@@ -275,14 +287,190 @@ def parse_specialties(raw):
     except (json.JSONDecodeError, ValueError):
         return re.findall(r'"([^"]+)"', raw)
 
-def compute_trust_signals(specialties_raw, description, facility_type):
+# OLD IMPLEMENTATION - Commented out for reference
+# def compute_trust_signals(specialties_raw, description, facility_type):
+#     """
+#     Returns {capability: trust_level} where trust_level is one of:
+#       strong  – specialty confirmed by 2+ independent sources in the specialties array
+#       partial – specialty listed once in structured specialty data
+#       weak    – mentioned only in free-text description, or single hit from
+#                 a non-standard facility type (suspicious provenance)
+#       none    – no claim found anywhere
+#     """
+#     specialties = parse_specialties(specialties_raw)
+#     desc = (description or "").lower()
+#     is_trusted_type = (facility_type or "").lower() in TRUSTED_FACILITY_TYPES
+#
+#     signals = {}
+#     for cap in CAPABILITIES:
+#         kws = SPECIALTY_KEYWORDS[cap]
+#         hits = sum(1 for s in specialties if any(kw.lower() in s.lower() for kw in kws))
+#         desc_hit = any(kw in desc for kw in DESC_KEYWORDS[cap])
+#
+#         if hits >= 2:
+#             signals[cap] = "strong"
+#         elif hits == 1:
+#             # A single structured claim from a non-standard facility type is suspicious
+#             signals[cap] = "partial" if is_trusted_type else "weak"
+#         elif desc_hit:
+#             signals[cap] = "weak"
+#         else:
+#             signals[cap] = "none"
+#
+#     return signals
+
+def calculate_trust_score(row):
     """
-    Returns {capability: trust_level} where trust_level is one of:
-      strong  – specialty confirmed by 2+ independent sources in the specialties array
-      partial – specialty listed once in structured specialty data
-      weak    – mentioned only in free-text description, or single hit from
-                a non-standard facility type (suspicious provenance)
-      none    – no claim found anywhere
+    Calculate trust score (0-100) based on weighted signals:
+    
+    Contact Completeness (40 points):
+      - Phone number present: 10 points
+      - Email present: 15 points
+      - Website present: 15 points
+    
+    Location Verification (30 points):
+      - Latitude & longitude both present: 20 points
+      - Complete address (all fields populated): 10 points
+    
+    Credibility Indicators (30 points):
+      - Specialties documented: 15 points
+      - Operator type is government/nonprofit: 10 points
+      - Last updated within 90 days: 5 points (not available in current data)
+    
+    Returns: dict with trust_score (0-100), trust_tier (strong/partial/weak),
+             strengths list, and weaknesses list
+    """
+    from datetime import datetime, timedelta
+    
+    score = 0
+    strengths = []
+    weaknesses = []
+    
+    # Contact Completeness (40 points)
+    phone = row.get('phone_numbers')
+    email = row.get('email')
+    website = row.get('website')
+    
+    if phone and str(phone).strip() and str(phone).lower() not in ['none', 'null', '']:
+        score += 10
+        strengths.append("Phone number available")
+    else:
+        weaknesses.append("Missing phone number (-10 pts)")
+    
+    if email and str(email).strip() and str(email).lower() not in ['none', 'null', '']:
+        score += 15
+        strengths.append("Email address available")
+    else:
+        weaknesses.append("Missing email address (-15 pts)")
+    
+    if website and str(website).strip() and str(website).lower() not in ['none', 'null', '']:
+        score += 15
+        strengths.append("Website available")
+    else:
+        weaknesses.append("Missing website (-15 pts)")
+    
+    # Location Verification (30 points)
+    lat = row.get('latitude')
+    lon = row.get('longitude')
+    has_gps = row.get('has_gps')
+    
+    # Check if GPS is available either through lat/lon or has_gps flag
+    gps_available = False
+    if lat and lon and str(lat).strip() and str(lon).strip():
+        try:
+            float(lat)
+            float(lon)
+            gps_available = True
+        except (ValueError, TypeError):
+            pass
+    elif has_gps and str(has_gps).lower() in ['yes', 'true', '1']:
+        gps_available = True
+    
+    if gps_available:
+        score += 20
+        strengths.append("GPS coordinates verified")
+    else:
+        weaknesses.append("Missing GPS coordinates (-20 pts)")
+    
+    # Check address completeness
+    address_fields = ['address_line1', 'address_city', 'address_stateorregion', 'address_postalcode']
+    complete_address = all(
+        row.get(field) and str(row.get(field)).strip() and str(row.get(field)).lower() not in ['none', 'null', '']
+        for field in address_fields
+    )
+    
+    if complete_address:
+        score += 10
+        strengths.append("Complete address information")
+    else:
+        weaknesses.append("Incomplete address details (-10 pts)")
+    
+    # Credibility Indicators (30 points)
+    specialties = row.get('specialties')
+    if specialties and str(specialties).strip() and str(specialties) not in ['[]', 'null', 'None', '']:
+        try:
+            spec_list = parse_specialties(specialties)
+            if spec_list and len(spec_list) > 0:
+                score += 15
+                strengths.append(f"Specialties documented ({len(spec_list)} listed)")
+            else:
+                weaknesses.append("No specialties documented (-15 pts)")
+        except:
+            weaknesses.append("No specialties documented (-15 pts)")
+    else:
+        weaknesses.append("No specialties documented (-15 pts)")
+    
+    # Operator type check - check both operatortype and operatorTypeId fields
+    operator = str(row.get('operatortype', '')).lower()
+    operator_id = str(row.get('operatortypeid', '')).lower()
+    
+    if 'government' in operator or 'nonprofit' in operator or 'public' in operator or \
+       'government' in operator_id or 'nonprofit' in operator_id or 'public' in operator_id:
+        score += 10
+        op_display = row.get('operatortype') or row.get('operatortypeid', 'N/A')
+        strengths.append(f"Trusted operator type ({op_display})")
+    else:
+        weaknesses.append("Not a government/nonprofit operator (-10 pts)")
+    
+    # Last updated check (5 points) - not available in current dataset
+    # Commenting out for now
+    # updated = row.get('last_updated')
+    # if updated:
+    #     try:
+    #         updated_date = datetime.fromisoformat(str(updated))
+    #         if datetime.now() - updated_date <= timedelta(days=90):
+    #             score += 5
+    #             strengths.append("Recently updated (within 90 days)")
+    #         else:
+    #             weaknesses.append("Not updated recently (-5 pts)")
+    #     except:
+    #         weaknesses.append("Update date unavailable (-5 pts)")
+    # else:
+    #     weaknesses.append("Update date unavailable (-5 pts)")
+    
+    # Determine trust tier
+    if score >= 70:
+        trust_tier = "strong"
+    elif score >= 40:
+        trust_tier = "partial"
+    else:
+        trust_tier = "weak"
+    
+    return {
+        'trust_score': score,
+        'trust_tier': trust_tier,
+        'strengths': strengths,
+        'weaknesses': weaknesses
+    }
+
+def compute_trust_signals(specialties_raw, description, facility_type, overall_trust_tier=None):
+    """
+    Returns {capability: trust_level} for each capability.
+    Now adjusted based on overall facility trust score.
+    
+    If overall trust is weak, capability signals are capped at 'weak' regardless of keyword matches.
+    If overall trust is partial, capability signals are capped at 'partial'.
+    Only facilities with strong overall trust can show strong capability signals.
     """
     specialties = parse_specialties(specialties_raw)
     desc = (description or "").lower()
@@ -294,15 +482,35 @@ def compute_trust_signals(specialties_raw, description, facility_type):
         hits = sum(1 for s in specialties if any(kw.lower() in s.lower() for kw in kws))
         desc_hit = any(kw in desc for kw in DESC_KEYWORDS[cap])
 
+        # Determine base signal from keyword matching
         if hits >= 2:
-            signals[cap] = "strong"
+            base_signal = "strong"
         elif hits == 1:
-            # A single structured claim from a non-standard facility type is suspicious
-            signals[cap] = "partial" if is_trusted_type else "weak"
+            base_signal = "partial" if is_trusted_type else "weak"
         elif desc_hit:
-            signals[cap] = "weak"
+            base_signal = "weak"
         else:
-            signals[cap] = "none"
+            base_signal = "none"
+        
+        # Cap the signal based on overall facility trust
+        if overall_trust_tier:
+            if overall_trust_tier == "weak":
+                # Weak facilities can't claim strong or partial capabilities
+                if base_signal in ["strong", "partial"]:
+                    signals[cap] = "weak"
+                else:
+                    signals[cap] = base_signal
+            elif overall_trust_tier == "partial":
+                # Partial facilities can't claim strong capabilities
+                if base_signal == "strong":
+                    signals[cap] = "partial"
+                else:
+                    signals[cap] = base_signal
+            else:
+                # Strong facilities can claim any level
+                signals[cap] = base_signal
+        else:
+            signals[cap] = base_signal
 
     return signals
 
@@ -321,42 +529,113 @@ def _badge(level):
     )
 
 def render_trust_table(df, caps):
-    cap_headers = "".join(f'<th style="text-align:center;min-width:80px">{c}</th>' for c in caps)
     rows = ""
     for _, row in df.iterrows():
+        # Calculate overall trust score
+        trust_result = calculate_trust_score(row)
+        trust_score = trust_result['trust_score']
+        trust_tier = trust_result['trust_tier']
+        
+        # Get capability signals (capped by overall trust tier)
         sigs = compute_trust_signals(
-            row.get("specialties"), row.get("description"), row.get("facilitytypeid")
+            row.get("specialties"), row.get("description"), row.get("facilitytypeid"),
+            overall_trust_tier=trust_tier
         )
+        
         city = row.get("address_city") or ""
         state = row.get("address_stateorregion") or ""
         location = f"{city}, {state}".strip(", ")
         ftype = (row.get("facilitytypeid") or "").lower()
-        cells = "".join(f'<td style="text-align:center">{_badge(sigs[c])}</td>' for c in caps)
+        
+        # Trust score badge - fixed formatting
+        score_color = TRUST_COLORS[trust_tier]
+        score_text_color = TRUST_TEXT_COLORS[trust_tier]
+        tier_label = TRUST_LABELS[trust_tier].upper()
+        score_badge = (
+            f'<div style="background:{score_color};color:{score_text_color};padding:6px 12px;'
+            f'border-radius:8px;font-size:13px;font-weight:700;display:inline-block;text-align:center;min-width:80px">'
+            f'<div>{trust_score}/100</div>'
+            f'<div style="font-size:9px;margin-top:2px">{tier_label}</div></div>'
+        )
+        
+        # Consolidate capabilities into a single column as a list with better spacing
+        cap_list = []
+        for c in caps:
+            level = sigs[c]
+            if level != "none":
+                badge = _badge(level)
+                cap_list.append(
+                    f'<div style="margin:6px 0;display:flex;align-items:center;line-height:1.6">'
+                    f'<strong style="min-width:90px;display:inline-block">{c}:</strong>'
+                    f'<span style="margin-left:8px">{badge}</span>'
+                    f'</div>'
+                )
+        
+        capabilities_cell = "".join(cap_list) if cap_list else '<span style="color:#999">No capabilities claimed</span>'
+        
+        # Build strengths/weaknesses tooltip
+        strengths_html = " | ".join(f"✓ {s}" for s in trust_result['strengths'])
+        weaknesses_html = " | ".join(f"✗ {w}" for w in trust_result['weaknesses'])
+        tooltip = f"Strengths: {strengths_html} | Weaknesses: {weaknesses_html}"
+        
         rows += (
             f"<tr>"
             f"<td><strong>{row['name']}</strong></td>"
             f'<td style="color:#6c757d;font-size:12px">{location}</td>'
             f'<td style="color:#6c757d;font-size:12px;text-transform:capitalize">{ftype}</td>'
-            f"{cells}"
+            f'<td style="text-align:center;padding:10px" title="{tooltip}">{score_badge}</td>'
+            f'<td style="font-size:12px">{capabilities_cell}</td>'
             f"</tr>"
         )
 
     return f"""
 <style>
   .tt {{ width:100%;border-collapse:collapse;font-size:13px }}
-  .tt th {{ background:#212529;color:white;padding:8px 12px;white-space:nowrap }}
-  .tt td {{ padding:7px 10px;border-bottom:1px solid #dee2e6;vertical-align:middle }}
+  .tt th {{ background:#212529;color:white;padding:10px 12px;white-space:nowrap }}
+  .tt td {{ padding:10px;border-bottom:1px solid #dee2e6;vertical-align:top }}
   .tt tr:hover td {{ background:#f8f9fa }}
 </style>
 <table class="tt">
   <thead><tr>
-    <th style="text-align:left">Facility</th>
-    <th style="text-align:left">Location</th>
-    <th style="text-align:left">Type</th>
-    {cap_headers}
+    <th style="text-align:left;width:25%">Facility</th>
+    <th style="text-align:left;width:20%">Location</th>
+    <th style="text-align:left;width:10%">Type</th>
+    <th style="text-align:center;width:12%">Trust Score</th>
+    <th style="text-align:left;width:33%">Capabilities</th>
   </tr></thead>
   <tbody>{rows}</tbody>
 </table>"""
+
+def render_facility_details(row):
+    """Render detailed trust analysis for a single facility"""
+    trust_result = calculate_trust_score(row)
+    
+    score_color = TRUST_COLORS[trust_result['trust_tier']]
+    score_text_color = TRUST_TEXT_COLORS[trust_result['trust_tier']]
+    
+    strengths_list = "".join(f"<li style='color:#198754'>✓ {s}</li>" for s in trust_result['strengths'])
+    weaknesses_list = "".join(f"<li style='color:#dc3545'>✗ {w}</li>" for w in trust_result['weaknesses'])
+    
+    return f"""
+    <div style="border:1px solid #dee2e6;border-radius:8px;padding:16px;margin:10px 0">
+        <h4 style="margin-top:0">{row['name']}</h4>
+        <div style="margin-bottom:12px">
+            <span style="background:{score_color};color:{score_text_color};padding:6px 12px;border-radius:12px;font-size:14px;font-weight:700">
+                Trust Score: {trust_result['trust_score']}/100 ({trust_result['trust_tier'].upper()})
+            </span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+            <div>
+                <h5 style="color:#198754;margin-bottom:8px">✓ Strengths</h5>
+                <ul style="margin:0;padding-left:20px">{strengths_list if strengths_list else '<li>None identified</li>'}</ul>
+            </div>
+            <div>
+                <h5 style="color:#dc3545;margin-bottom:8px">✗ Weaknesses</h5>
+                <ul style="margin:0;padding-left:20px">{weaknesses_list if weaknesses_list else '<li>None identified</li>'}</ul>
+            </div>
+        </div>
+    </div>
+    """
 
 # ── Page header ───────────────────────────────────────────────────────────────
 
@@ -421,33 +700,51 @@ with tab1:
 # ── Tab 2: Capability Trust Evaluator ────────────────────────────────────────
 
 with tab2:
-    st.subheader("Evaluate Facility Capability Claims")
-    st.markdown(
-        "For each facility, this tool evaluates how well its claimed capabilities "
-        "are supported by **structured specialty data** vs. unstructured description text."
-    )
-
-    with st.expander("📖 Trust signal legend", expanded=True):
-        lc = st.columns(4)
-        lc[0].markdown(
-            f'<span style="background:{TRUST_COLORS["strong"]};color:white;padding:3px 10px;'
-            f'border-radius:12px;font-size:12px;font-weight:600">Strong</span>'
-            "&nbsp; Specialty confirmed by 2+ independent sources",
-            unsafe_allow_html=True,
-        )
-        lc[1].markdown(
-            f'<span style="background:{TRUST_COLORS["partial"]};color:#212529;padding:3px 10px;'
-            f'border-radius:12px;font-size:12px;font-weight:600">Partial</span>'
-            "&nbsp; Specialty listed once in structured data",
-            unsafe_allow_html=True,
-        )
-        lc[2].markdown(
-            f'<span style="background:{TRUST_COLORS["weak"]};color:white;padding:3px 10px;'
-            f'border-radius:12px;font-size:12px;font-weight:600">Weak</span>'
-            "&nbsp; Description text only, or non-standard facility type",
-            unsafe_allow_html=True,
-        )
-        lc[3].markdown("**—** &nbsp; No claim found in any field", unsafe_allow_html=True)
+    st.subheader("Evaluate Facility Trust & Capability Claims")
+    
+    # Side-by-side explanation boxes
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("""
+        <div style="background:#e3f2fd;padding:15px;border-radius:8px;border-left:4px solid #2196f3;height:100%">
+        <h4 style="margin-top:0;color:#1976d2">📊 Trust Score (0-100)</h4>
+        <p style="margin-bottom:12px"><strong>Measures data completeness:</strong></p>
+        <div style="font-size:13px;line-height:1.8">
+        <p style="margin:6px 0">• Contact info (40 pts): Phone, Email, Website</p>
+        <p style="margin:6px 0">• Location (30 pts): GPS + Complete address</p>
+        <p style="margin:6px 0">• Credibility (30 pts): Specialties + Operator type</p>
+        </div>
+        <p style="margin-top:12px;margin-bottom:0;font-size:12px;color:#666">
+        <strong>Note:</strong> Reflects database completeness, not medical quality.
+        </p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown(f"""
+        <div style="background:#fff3e0;padding:15px;border-radius:8px;border-left:4px solid #ff9800">
+        <h4 style="margin-top:0;color:#f57c00">🏥 Capability Signals</h4>
+        <p style="margin-bottom:12px"><strong>6 capabilities evaluated:</strong> ICU, Emergency, Maternity, Oncology, Trauma, NICU</p>
+        <div style="font-size:13px;line-height:1.8">
+        <p style="margin:6px 0;display:flex;align-items:center">
+        <span style="background:{TRUST_COLORS["strong"]};color:white;padding:3px 10px;border-radius:8px;font-size:11px;font-weight:600;display:inline-block;min-width:70px;text-align:center">Strong</span>
+        <span style="margin-left:10px">2+ specialty matches</span>
+        </p>
+        <p style="margin:6px 0;display:flex;align-items:center">
+        <span style="background:{TRUST_COLORS["partial"]};color:#212529;padding:3px 10px;border-radius:8px;font-size:11px;font-weight:600;display:inline-block;min-width:70px;text-align:center">Partial</span>
+        <span style="margin-left:10px">1 specialty match</span>
+        </p>
+        <p style="margin:6px 0;display:flex;align-items:center">
+        <span style="background:{TRUST_COLORS["weak"]};color:white;padding:3px 10px;border-radius:8px;font-size:11px;font-weight:600;display:inline-block;min-width:70px;text-align:center">Weak</span>
+        <span style="margin-left:10px">Description only</span>
+        </p>
+        </div>
+        <p style="margin-top:12px;margin-bottom:0;font-size:12px;color:#666">
+        <strong>Note:</strong> Low trust facilities have capabilities capped at "Weak".
+        </p>
+        </div>
+        """, unsafe_allow_html=True)
 
     st.markdown("---")
 
@@ -471,11 +768,16 @@ with tab2:
     with fc4:
         min_trust_label = st.selectbox(
             "Show only facilities with at least…",
-            ["Any claim (Weak+)", "Partial evidence", "Strong evidence"],
+            ["All facilities (no filter)", "Any claim (Weak+)", "Partial evidence", "Strong evidence"],
             key="min_trust",
         )
 
-    min_level = {"Any claim (Weak+)": 1, "Partial evidence": 2, "Strong evidence": 3}[min_trust_label]
+    min_level = {
+        "All facilities (no filter)": 0,
+        "Any claim (Weak+)": 1,
+        "Partial evidence": 2,
+        "Strong evidence": 3
+    }[min_trust_label]
 
     if st.button("🔬 Evaluate", type="primary", key="eval_btn"):
         if not selected_caps:
@@ -487,12 +789,17 @@ with tab2:
             if df_eval.empty:
                 st.warning("No facilities found. Try broadening your filters.")
             else:
-                # Compute trust signals for every row
+                # Compute trust scores and signals for every row
+                all_trust_results = [
+                    calculate_trust_score(r)
+                    for _, r in df_eval.iterrows()
+                ]
                 all_signals = [
                     compute_trust_signals(
-                        r.get("specialties"), r.get("description"), r.get("facilitytypeid")
+                        r.get("specialties"), r.get("description"), r.get("facilitytypeid"),
+                        overall_trust_tier=trust_result['trust_tier']
                     )
-                    for _, r in df_eval.iterrows()
+                    for (_, r), trust_result in zip(df_eval.iterrows(), all_trust_results)
                 ]
 
                 # Filter by minimum trust threshold across selected capabilities
@@ -523,25 +830,41 @@ with tab2:
                         render_trust_table(df_filtered, selected_caps),
                         unsafe_allow_html=True,
                     )
+                    
+                    # Detailed facility analysis
+                    st.markdown("---")
+                    st.subheader("📊 Detailed Trust Analysis")
+                    st.caption("Click on a facility to see strengths and weaknesses")
+                    
+                    # Show detailed view for top 10 facilities
+                    for idx, (_, row) in enumerate(df_filtered.head(10).iterrows()):
+                        with st.expander(f"🏥 {row['name']} - {row.get('address_city', 'N/A')}"):
+                            st.markdown(render_facility_details(row), unsafe_allow_html=True)
 
-                    # CSV download
+                    # CSV download with trust scores
                     download_rows = []
                     for _, row in df_filtered.iterrows():
+                        trust_result = calculate_trust_score(row)
                         sigs = compute_trust_signals(
-                            row.get("specialties"), row.get("description"), row.get("facilitytypeid")
+                            row.get("specialties"), row.get("description"), row.get("facilitytypeid"),
+                            overall_trust_tier=trust_result['trust_tier']
                         )
                         download_rows.append({
                             "facility": row["name"],
                             "city": row.get("address_city", ""),
                             "state": row.get("address_stateorregion", ""),
                             "facility_type": row.get("facilitytypeid", ""),
+                            "trust_score": trust_result['trust_score'],
+                            "trust_tier": trust_result['trust_tier'],
+                            "strengths": " | ".join(trust_result['strengths']),
+                            "weaknesses": " | ".join(trust_result['weaknesses']),
                             **{f"{c}_trust": TRUST_LABELS[sigs[c]] for c in CAPABILITIES},
                         })
                     csv = pd.DataFrame(download_rows).to_csv(index=False)
                     st.download_button(
-                        "⬇️ Download results as CSV",
+                        "⬇️ Download results with trust scores as CSV",
                         csv,
-                        "capability_trust.csv",
+                        "facility_trust_analysis.csv",
                         "text/csv",
                     )
 
