@@ -894,15 +894,12 @@ st.markdown("""
 
     .tt td.muted { color: var(--muted-text); }
 
-    /* Theme toggle button */
-    [data-testid="stButton"] button[title="Switch theme"] {
-        font-size: 20px;
-        padding: 4px 10px;
-        border: 1px solid var(--border-soft);
-        border-radius: 8px;
-        background: var(--panel-bg);
-        cursor: pointer;
-        line-height: 1;
+    /* Header toggle buttons — always visible regardless of theme */
+    [data-testid="stHorizontalBlock"]:has([data-testid="column"]) [data-testid="stButton"].toggle-btn > button {
+        border: 1.5px solid #555 !important;
+        border-radius: 6px !important;
+        font-size: 13px !important;
+        padding: 4px 8px !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -1057,29 +1054,20 @@ is_dark = st.session_state.app_theme == "dark"
 if "chat_open" not in st.session_state:
     st.session_state.chat_open = False
 
-title_col, toggle_col = st.columns([8, 4])
+title_col, toggle_col = st.columns([6, 6])
 with title_col:
     st.title("🏥 Healthcare Facility Capabilities Verification")
 with toggle_col:
-    st.write("")
-    st.write("")
-    t1, t2, t3 = st.columns(3)
+    st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+    t1, t2, t3, t4 = st.columns([1, 1, 1, 3])
     with t1:
-        if st.button(
-            "☀️  Light",
-            key="btn_light",
-            type="primary" if not is_dark else "secondary",
-            use_container_width=True,
-        ):
+        light_type = "primary" if not is_dark else "secondary"
+        if st.button("☀️ Light", key="btn_light", type=light_type, use_container_width=True):
             st.session_state.app_theme = "light"
             st.rerun()
     with t2:
-        if st.button(
-            "🌙  Dark",
-            key="btn_dark",
-            type="primary" if is_dark else "secondary",
-            use_container_width=True,
-        ):
+        dark_type = "primary" if is_dark else "secondary"
+        if st.button("🌙 Dark", key="btn_dark", type=dark_type, use_container_width=True):
             st.session_state.app_theme = "dark"
             st.rerun()
     with t3:
