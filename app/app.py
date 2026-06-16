@@ -3,6 +3,7 @@ import re
 import streamlit as st
 import psycopg2
 import pandas as pd
+import pydeck as pdk
 from databricks.sdk import WorkspaceClient
 
 st.set_page_config(
@@ -904,21 +905,34 @@ with main_col:
                     map_df["latitude"] = pd.to_numeric(map_df["latitude"], errors="coerce")
                     map_df["longitude"] = pd.to_numeric(map_df["longitude"], errors="coerce")
                     map_df = map_df.dropna(subset=["latitude", "longitude"])
-                    st.caption(
-                        f"Debug: {len(results)} results · {len(map_df)} have valid lat/lon"
-                    )
                     if not map_df.empty:
                         st.subheader(f"📍 Map View ({len(map_df)} facilities with GPS)")
-                        try:
-                            st.map(map_df, latitude="latitude", longitude="longitude", size=4000, color="#ff4444")
-                        except Exception as map_err:
-                            st.error(f"Map rendering error: {map_err}")
-                            st.dataframe(map_df.head(20), use_container_width=True)
+                        layer = pdk.Layer(
+                            "ScatterplotLayer",
+                            data=map_df,
+                            get_position=["longitude", "latitude"],
+                            get_radius=8000,
+                            get_fill_color=[255, 68, 68, 200],
+                            get_line_color=[180, 0, 0],
+                            pickable=True,
+                        )
+                        view = pdk.ViewState(
+                            latitude=map_df["latitude"].mean(),
+                            longitude=map_df["longitude"].mean(),
+                            zoom=5,
+                            pitch=0,
+                        )
+                        st.pydeck_chart(
+                            pdk.Deck(
+                                layers=[layer],
+                                initial_view_state=view,
+                                tooltip={"text": "{name}"},
+                                map_style="mapbox://styles/mapbox/light-v10",
+                            ),
+                            use_container_width=True,
+                        )
                     else:
                         st.info("No GPS coordinates available for the returned facilities.")
-                        st.caption(f"Sample raw values: {results[['latitude', 'longitude']].head(5).to_dict('records')}")
-                else:
-                    st.warning(f"No latitude/longitude columns in results. Columns returned: {list(results.columns)}")
             else:
                 st.warning("No facilities found matching your search criteria.")
     
