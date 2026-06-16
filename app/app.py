@@ -90,6 +90,26 @@ When facility data is provided below, use it directly to answer. Be concise, dir
 
 @st.cache_resource(ttl=3500)  # Refresh before the 1-hour OAuth token expiry
 def get_db_connection():
+    """Get a database connection. Returns a new connection each time to avoid 'connection closed' errors."""
+    try:
+        w = WorkspaceClient()
+        user = w.current_user.me().user_name
+        token = w.postgres.generate_database_credential(endpoint=LAKEBASE_ENDPOINT).token
+        conn = psycopg2.connect(
+            host=LAKEBASE_HOST,
+            database=LAKEBASE_DATABASE,
+            user=user,
+            password=token,
+            port=5432,
+            sslmode="require",
+        )
+        return conn
+    except Exception as e:
+        st.error(f"Failed to connect to database: {e}")
+        return None
+
+def get_fresh_connection():
+    """Get a fresh database connection without caching."""
     try:
         w = WorkspaceClient()
         user = w.current_user.me().user_name
@@ -107,7 +127,7 @@ def get_db_connection():
         return None
 
 def search_facilities(search_term="", state="", city="", limit=100):
-    conn = get_db_connection()
+    conn = get_fresh_connection()
     if not conn:
         return pd.DataFrame()
     try:
@@ -123,13 +143,17 @@ def search_facilities(search_term="", state="", city="", limit=100):
             query += " AND address_city ILIKE %s"
             params.append(f"%{city}%")
         query += f" ORDER BY name LIMIT {limit}"
-        return pd.read_sql_query(query, conn, params=params)
+        result = pd.read_sql_query(query, conn, params=params)
+        conn.close()
+        return result
     except Exception as e:
         st.error(f"Query error: {e}")
+        if conn:
+            conn.close()
         return pd.DataFrame()
 
 def get_facilities_for_evaluation(search_term="", state="", limit=200):
-    conn = get_db_connection()
+    conn = get_fresh_connection()
     if not conn:
         return pd.DataFrame()
     try:
@@ -143,13 +167,17 @@ def get_facilities_for_evaluation(search_term="", state="", limit=200):
             params.append(state)
         query += " ORDER BY name LIMIT %s"
         params.append(limit)
-        return pd.read_sql_query(query, conn, params=params)
+        result = pd.read_sql_query(query, conn, params=params)
+        conn.close()
+        return result
     except Exception as e:
         st.error(f"Query error: {e}")
+        if conn:
+            conn.close()
         return pd.DataFrame()
 
 def get_stats():
-    conn = get_db_connection()
+    conn = get_fresh_connection()
     if not conn:
         return {"total": 0, "states": 0, "cities": 0, "with_gps": 0}
     try:
@@ -163,13 +191,16 @@ def get_stats():
         cur.execute("SELECT COUNT(*) FROM facilities_search WHERE latitude IS NOT NULL AND longitude IS NOT NULL")
         with_gps = cur.fetchone()[0]
         cur.close()
+        conn.close()
         return {"total": total, "states": states, "cities": cities, "with_gps": with_gps}
     except Exception as e:
         st.error(f"Stats error: {e}")
+        if conn:
+            conn.close()
         return {"total": 0, "states": 0, "cities": 0, "with_gps": 0}
 
 def get_states():
-    conn = get_db_connection()
+    conn = get_fresh_connection()
     if not conn:
         return []
     try:
@@ -180,39 +211,82 @@ def get_states():
         )
         states = [row[0] for row in cur.fetchall()]
         cur.close()
+        conn.close()
         return states
-    except Exception:
+    except Exception as e:
+        if conn:
+            conn.close()
         return []
 
-def search_for_chat(query, limit=4):
-    conn = get_db_connection()
+def search_for_chat(search_dict, limit=10):
+    """Search for facilities using name and/or state"""
+    conn = get_fresh_connection()
     if not conn:
         return pd.DataFrame()
     try:
-        return pd.read_sql_query(
-            """SELECT unique_id, name, address_city, address_stateorregion,
-                      facilitytypeid, specialties, description
-               FROM facilities_search
-               WHERE name ILIKE %s OR description ILIKE %s
-               ORDER BY name LIMIT %s""",
-            conn,
-            params=[f"%{query}%", f"%{query}%", limit],
-        )
-    except Exception:
+        sql_query = "SELECT unique_id, name, address_city, address_stateorregion, facilitytypeid, specialties, description FROM facilities_search WHERE 1=1"
+        params = []
+        
+        # Handle dict or string input for backward compatibility
+        if isinstance(search_dict, str):
+            search_dict = {"name": search_dict, "state": None}
+        
+        name = search_dict.get("name")
+        state = search_dict.get("state")
+        
+        if name:
+            sql_query += " AND name ILIKE %s"
+            params.append(f"%{name}%")
+        
+        if state:
+            sql_query += " AND address_stateorregion = %s"
+            params.append(state)
+        
+        sql_query += " ORDER BY name LIMIT %s"
+        params.append(limit)
+        
+        result = pd.read_sql_query(sql_query, conn, params=params)
+        conn.close()
+        return result
+    except Exception as e:
+        if conn:
+            conn.close()
         return pd.DataFrame()
 
 def extract_search_terms(text):
-    """Pull likely facility name keywords (capitalized sequences) from user message."""
+    """Pull likely facility name keywords and location from user message."""
     skip = {"Can", "Which", "What", "Does", "Is", "Are", "Do", "How", "Tell",
-            "Show", "Find", "This", "The", "That", "Please", "Give", "List"}
-    # Prefer quoted strings
+            "Show", "Find", "This", "The", "That", "Please", "Give", "List", "Really", "With", "Have"}
+    
+    # Check if this is a location-based query (e.g., "facilities in Maharashtra")
+    location_pattern = r'\b(?:in|from)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\b'
+    location_match = re.search(location_pattern, text)
+    
+    # Prefer quoted strings for facility names
     quoted = re.findall(r'"([^"]+)"', text)
     if quoted:
-        return quoted[0]
-    # Fall back to capitalized proper-noun runs
+        return {"name": quoted[0], "state": location_match.group(1) if location_match else None}
+    
+    # Look for facility names - they often contain words like Hospital, Institute, Centre, Clinic
+    facility_keywords = r'\b([A-Z][a-zA-Z]*(?:\s+[A-Z][a-zA-Z]*)*(?:\s+(?:Hospital|Institute|Centre|Center|Clinic|Medical|Sciences|Technology|Care|Health))[a-zA-Z\s,]*)'
+    facility_match = re.search(facility_keywords, text)
+    if facility_match:
+        # Clean up the match
+        name = facility_match.group(1).strip()
+        # Remove trailing commas and location info
+        name = re.sub(r',.*$', '', name)
+        return {"name": name, "state": location_match.group(1) if location_match else None}
+    
+    # If it's a location-only query, return just the state
+    if location_match:
+        return {"name": None, "state": location_match.group(1)}
+    
+    # Fall back to capitalized proper-noun runs (but take more words)
     caps = re.findall(r'\b[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*\b', text)
     meaningful = [c for c in caps if c not in skip]
-    return " ".join(meaningful[:4]) if meaningful else ""
+    # Take up to 8 words to capture longer facility names
+    name = " ".join(meaningful[:8]) if meaningful else None
+    return {"name": name, "state": None}
 
 def build_chat_context(df):
     """Turn a DataFrame of facilities into a text block for the LLM."""
@@ -244,15 +318,34 @@ def build_chat_context(df):
 
 def ask_llm(messages):
     try:
+        from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
+        
         w = WorkspaceClient()
+        
+        # Convert dict messages to SDK ChatMessage objects
+        sdk_messages = []
+        for msg in messages:
+            role = ChatMessageRole(msg["role"])
+            sdk_messages.append(ChatMessage(role=role, content=msg["content"]))
+        
         resp = w.serving_endpoints.query(
             name="databricks-meta-llama-3-3-70b-instruct",
-            messages=messages,
+            messages=sdk_messages,
             max_tokens=800,
             temperature=0.2,
         )
-        return resp.choices[0].message.content
+        
+        # Handle response
+        if hasattr(resp, 'choices') and resp.choices:
+            return resp.choices[0].message.content
+        elif isinstance(resp, dict):
+            return resp['choices'][0]['message']['content']
+        else:
+            return str(resp)
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        st.error(f"LLM Error Details:\n{error_details}")
         return f"⚠️ Model error: {e}"
 
 # ── Trust signal logic ────────────────────────────────────────────────────────
@@ -637,6 +730,62 @@ def render_facility_details(row):
     </div>
     """
 
+# ── Custom CSS for Genie-style layout ─────────────────────────────────────────
+
+st.markdown("""
+<style>
+    /* Genie-style chat panel */
+    [data-testid="column"]:last-child {
+        border-left: 3px solid #FF3621;
+        padding-left: 20px;
+        background: linear-gradient(to bottom, #ffffff 0%, #fafafa 100%);
+        display: flex;
+        flex-direction: column;
+        height: calc(100vh - 200px);
+    }
+    
+    /* Chat header styling */
+    .genie-header {
+        background: linear-gradient(135deg, #FF3621 0%, #ff6b5a 100%);
+        color: white;
+        padding: 12px 16px;
+        border-radius: 8px;
+        font-weight: 600;
+        font-size: 16px;
+        margin-bottom: 12px;
+        flex-shrink: 0;
+    }
+    
+    /* Chat messages container - grows to fill space */
+    .chat-messages-container {
+        flex-grow: 1;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column-reverse;
+        padding-right: 8px;
+        margin-bottom: 12px;
+    }
+    
+    /* Chat messages */
+    .stChatMessage {
+        border-radius: 8px;
+        margin-bottom: 12px;
+    }
+    
+    /* Input area - stays at bottom */
+    .chat-input-area {
+        flex-shrink: 0;
+        padding-top: 8px;
+        border-top: 1px solid #dee2e6;
+    }
+    
+    /* Disable spinner overlay on chat column only */
+    [data-testid="column"]:last-child .stSpinner {
+        position: relative !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # ── Page header ───────────────────────────────────────────────────────────────
 
 st.title("🏥 Healthcare Facility Finder")
@@ -651,56 +800,67 @@ c4.metric("With GPS Coordinates", f"{stats['with_gps']:,}")
 
 st.markdown("---")
 
-# ── Tabs ──────────────────────────────────────────────────────────────────────
+# ── Main Layout: Content (70%) + Chat (30%) ───────────────────────────────────
 
-tab1, tab2, tab3 = st.tabs(["🔍 Facility Search", "🧪 Capability Trust Evaluator", "💬 Chat with Data"])
+# Initialize chat state
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-# ── Tab 1: Facility Search (existing) ────────────────────────────────────────
+# Create two-column layout: main content (70%) and chat (30%)
+main_col, chat_col = st.columns([7, 3])
 
-with tab1:
-    st.subheader("Search Healthcare Facilities")
+# ── Main Content Column ────────────────────────────────────────────────────────
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        search_term = st.text_input("Facility Name", placeholder="e.g., Hospital, Clinic")
-    with col2:
-        states = ["All States"] + get_states()
-        selected_state = st.selectbox("State", states)
-        state_filter = None if selected_state == "All States" else selected_state
-    with col3:
-        city = st.text_input("City", placeholder="e.g., Mumbai, Delhi")
+with main_col:
+    # Tabs for main content
+    tab1, tab2 = st.tabs(["🔍 Facility Search", "🧪 Capability Trust Evaluator"])
 
-    if st.button("🔎 Search", type="primary"):
-        with st.spinner("Searching facilities..."):
-            results = search_facilities(search_term, state_filter, city)
-        if not results.empty:
-            st.success(f"Found {len(results)} facilities")
-            display_cols = [c for c in
-                            ["name", "address_city", "address_stateorregion",
-                             "phone_numbers", "email", "facilitytypeid"]
-                            if c in results.columns]
-            display_df = results[display_cols].copy()
-            if "phone_numbers" in display_df.columns:
-                display_df["phone_numbers"] = display_df["phone_numbers"].apply(format_phones)
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-            if "latitude" in results.columns and "longitude" in results.columns:
-                map_df = results[["latitude", "longitude", "name"]].copy()
-                map_df["latitude"] = pd.to_numeric(map_df["latitude"], errors="coerce")
-                map_df["longitude"] = pd.to_numeric(map_df["longitude"], errors="coerce")
-                map_df = map_df.dropna(subset=["latitude", "longitude"])
-                if not map_df.empty:
-                    st.subheader(f"📍 Map View ({len(map_df)} facilities with GPS)")
-                    st.map(map_df, latitude="latitude", longitude="longitude", size=50, color="#ff4444")
-                else:
-                    st.info("No GPS coordinates available for the returned facilities.")
-        else:
-            st.warning("No facilities found matching your search criteria.")
-
-# ── Tab 2: Capability Trust Evaluator ────────────────────────────────────────
-
-with tab2:
-    st.subheader("Evaluate Facility Trust & Capability Claims")
+    # ── Tab 1: Facility Search ────────────────────────────────────────────────
+    
+    with tab1:
+        st.subheader("Search Healthcare Facilities")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            search_term = st.text_input("Facility Name", placeholder="e.g., Hospital, Clinic")
+        with col2:
+            states = ["All States"] + get_states()
+            selected_state = st.selectbox("State", states)
+            state_filter = None if selected_state == "All States" else selected_state
+        with col3:
+            city = st.text_input("City", placeholder="e.g., Mumbai, Delhi")
+        
+        if st.button("🔎 Search", type="primary"):
+            with st.spinner("Searching facilities..."):
+                results = search_facilities(search_term, state_filter, city)
+            if not results.empty:
+                st.success(f"Found {len(results)} facilities")
+                display_cols = [c for c in
+                                ["name", "address_city", "address_stateorregion",
+                                 "phone_numbers", "email", "facilitytypeid"]
+                                if c in results.columns]
+                display_df = results[display_cols].copy()
+                if "phone_numbers" in display_df.columns:
+                    display_df["phone_numbers"] = display_df["phone_numbers"].apply(format_phones)
+                st.dataframe(display_df, use_container_width=True, hide_index=True)
+                
+                if "latitude" in results.columns and "longitude" in results.columns:
+                    map_df = results[["latitude", "longitude", "name"]].copy()
+                    map_df["latitude"] = pd.to_numeric(map_df["latitude"], errors="coerce")
+                    map_df["longitude"] = pd.to_numeric(map_df["longitude"], errors="coerce")
+                    map_df = map_df.dropna(subset=["latitude", "longitude"])
+                    if not map_df.empty:
+                        st.subheader(f"📍 Map View ({len(map_df)} facilities with GPS)")
+                        st.map(map_df, latitude="latitude", longitude="longitude", size=50, color="#ff4444")
+                    else:
+                        st.info("No GPS coordinates available for the returned facilities.")
+            else:
+                st.warning("No facilities found matching your search criteria.")
+    
+    # ── Tab 2: Capability Trust Evaluator ─────────────────────────────────────
+    
+    with tab2:
+        st.subheader("Evaluate Facility Trust & Capability Claims")
     
     # Side-by-side explanation boxes
     col1, col2 = st.columns(2)
@@ -868,58 +1028,86 @@ with tab2:
                         "text/csv",
                     )
 
-# ── Tab 3: Chat with Data ─────────────────────────────────────────────────────
+# ── Right Chat Panel (Genie-style) ────────────────────────────────────────────
 
-with tab3:
-    st.subheader("💬 Chat with Your Facility Data")
-    st.caption(
-        "Ask questions like: *Can Apollo Hospital actually do ICU care?* · "
-        "*Which facilities in Maharashtra have strong emergency claims?* · "
-        "*What does Partial evidence mean for maternity?*"
-    )
-
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
-
-    # Render conversation history
+with chat_col:
+    # Genie-style header
+    st.markdown('<div class="genie-header">💬 Facility Trust Advisor</div>', unsafe_allow_html=True)
+    
+    # Initialize processing state
+    if "is_processing" not in st.session_state:
+        st.session_state.is_processing = False
+    
+    # Show status message when processing
+    if st.session_state.is_processing:
+        st.info("🔄 Retrieving response from AI assistant...")
+    else:
+        st.caption("Ask about facilities, capabilities, or trust scores")
+    
+    # Chat messages in scrollable container (newest at bottom)
+    st.markdown('<div class="chat-messages-container">', unsafe_allow_html=True)
     for msg in st.session_state.chat_history:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
-
-    if prompt := st.chat_input("Ask about facilities or their capability claims…"):
-        # Show user message immediately
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        st.session_state.chat_history.append({"role": "user", "content": prompt})
-
-        # Search the DB for relevant facilities
-        terms = extract_search_terms(prompt)
-        context_block = None
-        if terms:
-            df_ctx = search_for_chat(terms)
-            context_block = build_chat_context(df_ctx)
-
-        # Build system message with optional facility context
-        system_content = SYSTEM_PROMPT
-        if context_block:
-            system_content += f"\n\n### Relevant facilities from the database:\n\n{context_block}"
-
-        llm_messages = [{"role": "system", "content": system_content}]
-        llm_messages += [
-            {"role": m["role"], "content": m["content"]}
-            for m in st.session_state.chat_history
-        ]
-
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking…"):
-                reply = ask_llm(llm_messages)
-            st.markdown(reply)
-
-        st.session_state.chat_history.append({"role": "assistant", "content": reply})
-
-        if st.button("🗑️ Clear conversation", key="clear_chat"):
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Chat input area - always visible
+    st.markdown('<div class="chat-input-area">', unsafe_allow_html=True)
+    
+    # Chat input - disabled when processing
+    if not st.session_state.is_processing:
+        if prompt := st.chat_input("Ask about facilities…", key="genie_chat_input"):
+            # Set processing state
+            st.session_state.is_processing = True
+            
+            # Add user message to history
+            st.session_state.chat_history.append({"role": "user", "content": prompt})
+            
+            # Search the DB for relevant facilities
+            terms = extract_search_terms(prompt)
+            context_block = None
+            # Check if we have either a name or state to search for
+            if terms and (terms.get("name") or terms.get("state")):
+                df_ctx = search_for_chat(terms)
+                if not df_ctx.empty:
+                    context_block = build_chat_context(df_ctx)
+            
+            # Build system message with optional facility context
+            system_content = SYSTEM_PROMPT
+            if context_block:
+                system_content += f"\n\n### Relevant facilities from the database:\n\n{context_block}"
+            
+            llm_messages = [{"role": "system", "content": system_content}]
+            llm_messages += [
+                {"role": m["role"], "content": m["content"]}
+                for m in st.session_state.chat_history
+            ]
+            
+            # Get LLM response
+            reply = ask_llm(llm_messages)
+            st.session_state.chat_history.append({"role": "assistant", "content": reply})
+            
+            # Reset processing state
+            st.session_state.is_processing = False
+            st.rerun()
+    else:
+        # Show disabled input when processing
+        st.chat_input("Please wait for response...", key="disabled_chat_input", disabled=True)
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Clear button and examples
+    if st.session_state.chat_history:
+        if st.button("🗑️ Clear", key="clear_genie_chat", use_container_width=True):
             st.session_state.chat_history = []
             st.rerun()
+    
+    with st.expander("💡 Examples"):
+        st.markdown("""
+        - *Can Apollo Hospital do ICU care?*
+        - *Facilities in Maharashtra with emergency?*
+        - *What is Partial evidence?*
+        """)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 
