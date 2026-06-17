@@ -1,5 +1,5 @@
-streamlit>=1.38
-psycopg2-binary
-pandas
-pydeck>=0.8.0
+streamlit>=1.38,<2.0
+psycopg2-binary>=2.9
+pandas>=1.5,<3.0
+pydeck>=0.8.0,<1.0
 databricks-sdk>=0.81.0
