@@ -257,13 +257,7 @@ def search_and_evaluate(name="", state="", city="", limit=200):
     if not conn:
         return pd.DataFrame()
     try:
-        query = """
-            SELECT unique_id, name, address_city, address_stateorregion,
-                   phone_numbers, email, websites, facilitytypeid,
-                   specialties, description, latitude, longitude,
-                   operatortypeid, address_line1, address_zipOrPostcode
-            FROM facilities_search WHERE 1=1
-        """
+        query = "SELECT * FROM facilities_search WHERE 1=1"
         params = []
         if name:
             query += " AND name ILIKE %s"
@@ -276,9 +270,13 @@ def search_and_evaluate(name="", state="", city="", limit=200):
             params.append(f"%{city}%")
         query += " ORDER BY name LIMIT %s"
         params.append(limit)
-        result = pd.read_sql_query(query, conn, params=params)
+        cur = conn.cursor()
+        cur.execute(query, params)
+        cols = [desc[0] for desc in cur.description]
+        rows = cur.fetchall()
+        cur.close()
         conn.close()
-        return result
+        return pd.DataFrame(rows, columns=cols)
     except Exception as e:
         st.error(f"Query error: {e}")
         if conn:
